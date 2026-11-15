@@ -1,0 +1,17 @@
+/target
+**/target
+dist/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+# Secrets : ne jamais les versionner (cf. cahier des charges §8.5)
+.env
+.env.*
+*.keystore
+*.jks
