@@ -513,11 +513,127 @@ fn adaptive_estimate_from_stored_data() {
         .collect();
     let weigh_ins = weigh_in_points(&fx.db.weigh_ins_between(day(0), day(20)).unwrap());
 
-    match estimate_tdee(day(20), &days, &weigh_ins, 1_950.0, 0.1) {
+    match estimate_tdee(day(20), &days, &weigh_ins, 1_950.0) {
         AdaptiveOutcome::Estimated(e) => {
             assert_eq!((e.logged_days, e.weigh_in_days), (21, 21));
             assert!((e.tdee_base - 2_000.0).abs() < 1e-6);
         }
         other => panic!("estimation attendue, obtenu {other:?}"),
     }
+}
+
+#[test]
+fn search_tolerates_typos_after_exact_matches() {
+    let mut fx = Fixture::new();
+    let foods = [
+        fx.food(FoodSource::Ciqual, "Yaourt nature", None, 61.0),
+        fx.food(FoodSource::Ciqual, "Yaourt aux fruits", None, 95.0),
+        fx.food(FoodSource::Ciqual, "Camembert au lait cru", None, 270.0),
+        fx.food(FoodSource::Ciqual, "Pomme, pulpe et peau, crue", None, 54.0),
+    ];
+    for food in &foods {
+        fx.db.upsert_food(food).unwrap();
+    }
+    let names = |query: &str, limit: usize| -> Vec<String> {
+        fx.db
+            .search_foods(query, limit)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect()
+    };
+    // Une faute de frappe : les fiches sont quand même trouvées, les noms courts d'abord.
+    assert_eq!(names("yahourt", 10), ["Yaourt nature", "Yaourt aux fruits"]);
+    assert_eq!(names("pome", 10), ["Pomme, pulpe et peau, crue"]);
+    assert_eq!(names("camenbert cru", 10), ["Camembert au lait cru"]);
+    // Les correspondances exactes passent avant, sans doublon.
+    assert_eq!(
+        names("yaourt nat", 10),
+        ["Yaourt nature"],
+        "« nat » n'est le début d'aucun mot de « Yaourt aux fruits »"
+    );
+    // La limite s'applique à l'ensemble.
+    assert_eq!(names("yahourt", 1), ["Yaourt nature"]);
+    // Trop loin de tout : rien.
+    assert!(names("zzzzzz", 10).is_empty());
+}
+
+#[test]
+fn reference_foods_are_replaced_in_bulk() {
+    let mut fx = Fixture::new();
+    let mut a = fx.food(FoodSource::Ciqual, "Pomme", None, 54.0);
+    let b = fx.food(FoodSource::Ciqual, "Poire", None, 53.0);
+    // Fiches de référence : horodatage zéro, comme la table embarquée.
+    a.meta.hlc = fc_core::Hlc::ZERO;
+    assert_eq!(
+        fx.db
+            .import_reference_foods(&[a.clone(), b.clone()])
+            .unwrap(),
+        2
+    );
+    assert_eq!(fx.db.food(a.meta.id).unwrap(), Some(a.clone()));
+
+    // Nouvelle édition de la table : la fiche est remplacée bien que l'horodatage n'ait pas
+    // changé, et la recherche suit.
+    a.name = "Pomme, crue".into();
+    a.per_100.kcal = Some(52.0);
+    fx.db.import_reference_foods(&[a.clone()]).unwrap();
+    assert_eq!(fx.db.food(a.meta.id).unwrap(), Some(a));
+    assert_eq!(fx.db.search_foods("crue", 10).unwrap().len(), 1);
+    assert!(fx.db.food(b.meta.id).unwrap().is_some());
+}
+
+#[test]
+fn favorites_follow_the_latest_choice() {
+    let mut fx = Fixture::new();
+    let pomme = fx.food(FoodSource::Ciqual, "Pomme", None, 54.0);
+    let abricot = fx.food(FoodSource::Custom, "abricot du jardin", None, 48.0);
+    fx.db.upsert_food(&pomme).unwrap();
+    fx.db.upsert_food(&abricot).unwrap();
+    assert!(!fx.db.is_favorite(pomme.meta.id).unwrap());
+
+    let first = fx.meta().hlc;
+    let second = fx.meta().hlc;
+    let third = fx.meta().hlc;
+    assert!(fx.db.set_favorite(pomme.meta.id, true, first).unwrap());
+    assert!(fx.db.set_favorite(abricot.meta.id, true, first).unwrap());
+    // Par nom, sans tenir compte de la casse.
+    let names: Vec<String> = fx
+        .db
+        .favorite_foods(10)
+        .unwrap()
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    assert_eq!(names, ["abricot du jardin", "Pomme"]);
+
+    // Étoile retirée ; un ancien choix reçu après coup (synchronisation) est ignoré.
+    assert!(fx.db.set_favorite(pomme.meta.id, false, third).unwrap());
+    assert!(!fx.db.set_favorite(pomme.meta.id, true, second).unwrap());
+    assert!(!fx.db.is_favorite(pomme.meta.id).unwrap());
+    assert_eq!(fx.db.favorite_foods(10).unwrap().len(), 1);
+
+    // Mes aliments : uniquement la source demandée.
+    let mine = fx.db.foods_by_source(FoodSource::Custom, 10).unwrap();
+    assert_eq!(mine.len(), 1);
+    assert_eq!(mine[0].name, "abricot du jardin");
+}
+
+#[test]
+fn version_1_database_upgrades_without_losing_data() {
+    // Base créée par la version 1 du schéma, avec une donnée.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fc.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(include_str!("../migrations/0001_initial.sql"))
+            .unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute("INSERT INTO settings VALUES ('theme', 'dark')", [])
+            .unwrap();
+    }
+    let db = Db::open(&path).unwrap();
+    assert_eq!(db.schema_version().unwrap(), fc_storage::SCHEMA_VERSION);
+    assert_eq!(db.setting("theme").unwrap().as_deref(), Some("dark"));
+    assert!(!db.is_favorite(Uuid::from_u128(1)).unwrap());
 }

@@ -8,8 +8,9 @@ Tracker de calories **gratuit et open source** — Android, iOS, PC et web.
 - Une cible calorique qui **s'adapte à votre dépense réelle**, calculée à partir de ce que
   vous mangez et de l'évolution de votre poids.
 
-> **État du projet : en cours de construction.** Le cœur métier et le stockage local sont
-> écrits et testés ; l'interface n'existe pas encore. Voir [`docs/AVANCEMENT.md`](docs/AVANCEMENT.md).
+> **État du projet : en cours de construction.** Première version de l'application de bureau :
+> profil, écran *Aujourd'hui*, recherche d'aliments (Ciqual et Open Food Facts), ajout rapide,
+> pesées. Voir [`docs/AVANCEMENT.md`](docs/AVANCEMENT.md).
 
 Le fonctionnement prévu est décrit dans le
 [cahier des charges](docs/CAHIER_DES_CHARGES.md).
@@ -20,17 +21,43 @@ Le fonctionnement prévu est décrit dans le
 crates/
 ├─ core/      fc-core     Modèles et calculs (BMR, TDEE, macros, algorithme adaptatif…),
 │                         sans interface ni entrées-sorties
-└─ storage/   fc-storage  Base locale SQLite : schéma, migrations, journal
+├─ food-db/   fc-food-db  Table Ciqual embarquée, client Open Food Facts
+├─ storage/   fc-storage  Base locale SQLite : schéma, migrations, journal
+└─ service/   fc-service  Opérations de l'application (profil, journal, aliments, pesées)
+app/          fc-app      Interface (Leptos → WebAssembly), design system
+└─ src-tauri/ fc-desktop  Application de bureau (Tauri 2) : fenêtre, base, commandes
 docs/                     Cahier des charges, avancement, références visuelles
 ```
 
-À venir : `crates/food-db` (Open Food Facts, Ciqual), `crates/sync` (Google Drive) et `app/`
-(interface Leptos + Tauri 2).
+À venir : `crates/sync` (Google Drive).
+
+## Lancer l'application (Windows)
+
+Prérequis : [Rust](https://rustup.rs) 1.90 ou plus récent, et les *Build Tools* de Visual
+Studio (déjà nécessaires à Rust). WebView2 est inclus dans Windows 10 et 11.
+
+Une seule fois, installer la cible WebAssembly et les deux outils de build :
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install trunk --locked
+cargo install tauri-cli --version "^2" --locked
+```
+
+Puis, à chaque fois :
+
+```sh
+cd app
+cargo tauri dev
+```
+
+La première compilation prend plusieurs minutes. Ensuite, chaque modification du code
+recharge l'application. Pour produire un installateur Windows (`.msi` et `.exe` dans
+`target/release/bundle/`) : `cargo tauri build`, toujours depuis `app`.
+
+Les données sont dans `%APPDATA%\io.github.moreiio.fuckcalorie\fuck-calorie.db`.
 
 ## Développer
-
-Prérequis : [Rust](https://rustup.rs) 1.89 ou plus récent, et un compilateur C (sous Windows,
-les *Build Tools* de Visual Studio, déjà nécessaires à Rust).
 
 ```sh
 cargo test --workspace                                  # lancer les tests

@@ -1,0 +1,11 @@
+# Build de l'interface : `trunk serve` (développement) ou `trunk build --release`.
+[build]
+target = "index.html"
+dist = "dist"
+
+[watch]
+ignore = ["src-tauri"]
+
+[serve]
+port = 1420
+open = false

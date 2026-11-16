@@ -4,22 +4,28 @@
 //! Sur une fenêtre glissante de 21 jours :
 //!
 //! ```text
-//! TDEE_base = apport moyen − activités enregistrées moyennes − variation de tendance × 7 700
+//! TDEE_base = apport moyen − activités enregistrées moyennes − variation du poids × 7 700
 //!             (kcal/jour)    (kcal/jour)                        (kg/jour)
 //! ```
+//!
+//! La variation du poids est la **pente de la droite de régression** des pesées de la
+//! fenêtre. Le cahier des charges la mesurait sur le poids de tendance (moyenne mobile
+//! exponentielle), mais celui-ci a environ cinq semaines de retard sur une perte régulière :
+//! la dépense était sous-estimée de 200 à 300 kcal pendant le premier mois. La droite de
+//! régression lisse elle aussi l'eau et le sel, sans retard. Le poids de tendance reste ce
+//! que l'application affiche.
 //!
 //! C'est la formule du cahier des charges, écrite « par jour » : quand les 21 jours sont
 //! journalisés, les deux écritures donnent exactement le même résultat. Quand il manque des
 //! jours, l'apport des jours non journalisés est supposé égal à la moyenne des jours
 //! journalisés (plutôt que zéro, ce qui fausserait le calcul).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use chrono::{Days, NaiveDate};
+use chrono::{Datelike, Days, NaiveDate, Weekday};
 use serde::{Deserialize, Serialize};
 
 use crate::energy::KCAL_PER_KG;
-use crate::trend::{trend_on, trend_series};
 
 /// Fenêtre de calcul, en jours.
 pub const WINDOW_DAYS: u32 = 21;
@@ -27,6 +33,9 @@ pub const WINDOW_DAYS: u32 = 21;
 pub const MIN_LOGGED_DAYS: usize = 14;
 /// Nombre minimum de jours avec pesée dans la fenêtre.
 pub const MIN_WEIGH_INS: usize = 6;
+/// Écart minimum, en jours, entre la première et la dernière pesée de la fenêtre : des
+/// pesées trop rapprochées ne disent rien de l'évolution du poids.
+pub const MIN_WEIGH_IN_SPAN_DAYS: i64 = 7;
 /// Amortissement : le TDEE ne bouge pas de plus de ±100 kcal par recalcul hebdomadaire.
 pub const MAX_WEEKLY_CHANGE_KCAL: f64 = 100.0;
 /// Un jour non marqué « terminé » est ignoré s'il est sous 50 % de sa cible.
@@ -90,7 +99,8 @@ pub struct AdaptiveEstimate {
     pub mean_intake_kcal: f64,
     /// Activités enregistrées moyennes sur la fenêtre, en kcal/jour.
     pub mean_activity_kcal: f64,
-    /// Variation du poids de tendance, ramenée à une semaine (négatif = perte).
+    /// Variation du poids sur la fenêtre (pente des pesées), ramenée à une semaine
+    /// (négatif = perte).
     pub trend_kg_per_week: f64,
 }
 
@@ -106,16 +116,14 @@ impl AdaptiveEstimate {
 ///
 /// - `days` : les journées connues (l'ordre n'a pas d'importance ; les jours absents sont
 ///   considérés comme non journalisés).
-/// - `weigh_ins` : toutes les pesées disponibles (la tendance a besoin de l'historique).
+/// - `weigh_ins` : les pesées disponibles (seules celles de la fenêtre servent).
 /// - `previous_tdee` : l'estimation en cours (au début, le TDEE initial du §2.2).
-/// - `alpha` : coefficient de lissage du poids de tendance.
 #[must_use]
 pub fn estimate_tdee(
     window_end: NaiveDate,
     days: &[DayRecord],
     weigh_ins: &[(NaiveDate, f64)],
     previous_tdee: f64,
-    alpha: f64,
 ) -> AdaptiveOutcome {
     let window_start = window_end - Days::new(u64::from(WINDOW_DAYS - 1));
     let in_window = |date: NaiveDate| date >= window_start && date <= window_end;
@@ -131,12 +139,25 @@ pub fn estimate_tdee(
         .copied()
         .filter(|d| d.counts_as_logged())
         .collect();
-    let weigh_in_days = weigh_ins
+    // Une pesée par jour : la moyenne des pesées du jour.
+    let mut by_day: BTreeMap<NaiveDate, (f64, u32)> = BTreeMap::new();
+    for (date, kg) in weigh_ins {
+        if in_window(*date) && kg.is_finite() && *kg > 0.0 {
+            let slot = by_day.entry(*date).or_insert((0.0, 0));
+            slot.0 += kg;
+            slot.1 += 1;
+        }
+    }
+    let points: Vec<(f64, f64)> = by_day
         .iter()
-        .filter(|(date, kg)| in_window(*date) && kg.is_finite() && *kg > 0.0)
-        .map(|(date, _)| *date)
-        .collect::<BTreeSet<_>>()
-        .len();
+        .map(|(date, (sum, count))| {
+            (
+                (*date - window_start).num_days() as f64,
+                sum / f64::from(*count),
+            )
+        })
+        .collect();
+    let weigh_in_days = points.len();
 
     let insufficient = AdaptiveOutcome::InsufficientData {
         logged_days: logged.len(),
@@ -146,23 +167,10 @@ pub fn estimate_tdee(
         return insufficient;
     }
 
-    // Variation quotidienne du poids de tendance sur la fenêtre.
-    let series = trend_series(weigh_ins, window_end, alpha);
-    let Some(first) = series.first() else {
+    // Variation quotidienne du poids : pente de la droite de régression des pesées.
+    let Some(kg_per_day) = regression_slope(&points) else {
         return insufficient;
     };
-    let trend_start_date = first.date.max(window_start);
-    let span_days = (window_end - trend_start_date).num_days();
-    let (Some(trend_start), Some(trend_end)) = (
-        trend_on(&series, trend_start_date),
-        trend_on(&series, window_end),
-    ) else {
-        return insufficient;
-    };
-    if span_days < 1 {
-        return insufficient;
-    }
-    let kg_per_day = (trend_end - trend_start) / span_days as f64;
 
     let mean_intake_kcal = logged.iter().map(|d| d.eaten_kcal).sum::<f64>() / logged.len() as f64;
     let mean_activity_kcal = window_days
@@ -188,6 +196,29 @@ pub fn estimate_tdee(
         mean_activity_kcal,
         trend_kg_per_week: kg_per_day * 7.0,
     })
+}
+
+/// Pente (en kg/jour) de la droite des moindres carrés passant par les pesées
+/// `(jour, poids)`. `None` si les pesées sont trop rapprochées pour mesurer une évolution.
+fn regression_slope(points: &[(f64, f64)]) -> Option<f64> {
+    let (first, last) = (points.first()?, points.last()?);
+    if last.0 - first.0 < MIN_WEIGH_IN_SPAN_DAYS as f64 {
+        return None;
+    }
+    let n = points.len() as f64;
+    let mean_x = points.iter().map(|p| p.0).sum::<f64>() / n;
+    let mean_y = points.iter().map(|p| p.1).sum::<f64>() / n;
+    let covariance: f64 = points.iter().map(|p| (p.0 - mean_x) * (p.1 - mean_y)).sum();
+    let variance: f64 = points.iter().map(|p| (p.0 - mean_x).powi(2)).sum();
+    (variance > 0.0).then(|| covariance / variance)
+}
+
+/// Premier jour de la semaine qui contient `date`, pour une semaine commençant le jour
+/// `first` (lundi par défaut, §2.1). C'est le jour du recalcul hebdomadaire (§2.3).
+#[must_use]
+pub fn week_start(date: NaiveDate, first: Weekday) -> NaiveDate {
+    let back = (7 + date.weekday().num_days_from_monday() - first.num_days_from_monday()) % 7;
+    date - Days::new(u64::from(back))
 }
 
 #[cfg(test)]
@@ -277,7 +308,7 @@ mod tests {
     #[test]
     fn stable_weight_means_tdee_equals_intake() {
         let (days, weigh_ins) = simulate(21, 2_000.0, |_| 2_000.0, |_| 0.0);
-        let e = estimated(estimate_tdee(day(20), &days, &weigh_ins, 2_000.0, 0.1));
+        let e = estimated(estimate_tdee(day(20), &days, &weigh_ins, 2_000.0));
         assert!((e.raw_tdee_base - 2_000.0).abs() < 1e-6);
         assert!((e.tdee_base - 2_000.0).abs() < 1e-6);
         assert!(!e.was_damped());
@@ -289,7 +320,7 @@ mod tests {
     fn converges_to_true_expenditure() {
         // Vraie dépense 2 300 kcal, apport 1 750 kcal : perte de 0,5 kg/semaine.
         let (days, weigh_ins) = simulate(120, 2_300.0, |_| 1_750.0, |_| 0.0);
-        let e = estimated(estimate_tdee(day(119), &days, &weigh_ins, 2_300.0, 0.1));
+        let e = estimated(estimate_tdee(day(119), &days, &weigh_ins, 2_300.0));
         assert!(
             (e.raw_tdee_base - 2_300.0).abs() < 5.0,
             "{}",
@@ -304,7 +335,7 @@ mod tests {
         // compensée dans l'assiette : le poids ne bouge pas.
         let activity = |i: u64| if i.is_multiple_of(3) { 700.0 } else { 0.0 };
         let (days, weigh_ins) = simulate(21, 2_000.0, |i| 2_000.0 + activity(i), activity);
-        let e = estimated(estimate_tdee(day(20), &days, &weigh_ins, 2_000.0, 0.1));
+        let e = estimated(estimate_tdee(day(20), &days, &weigh_ins, 2_000.0));
         // La dépense de base reste 2 000 : les activités sont retirées, pas absorbées.
         assert!(
             (e.raw_tdee_base - 2_000.0).abs() < 1e-6,
@@ -321,7 +352,7 @@ mod tests {
         // 13 jours journalisés seulement.
         let few_days: Vec<DayRecord> = days.iter().copied().take(13).collect();
         assert_eq!(
-            estimate_tdee(day(20), &few_days, &weigh_ins, 2_000.0, 0.1),
+            estimate_tdee(day(20), &few_days, &weigh_ins, 2_000.0),
             AdaptiveOutcome::InsufficientData {
                 logged_days: 13,
                 weigh_in_days: 21
@@ -330,7 +361,7 @@ mod tests {
         // 14 jours : suffisant.
         let enough: Vec<DayRecord> = days.iter().copied().take(14).collect();
         assert!(matches!(
-            estimate_tdee(day(20), &enough, &weigh_ins, 2_000.0, 0.1),
+            estimate_tdee(day(20), &enough, &weigh_ins, 2_000.0),
             AdaptiveOutcome::Estimated(_)
         ));
 
@@ -338,7 +369,7 @@ mod tests {
         let mut few_weigh_ins: Vec<(NaiveDate, f64)> = weigh_ins.iter().copied().take(5).collect();
         few_weigh_ins.push((day(0), 70.2));
         assert_eq!(
-            estimate_tdee(day(20), &days, &few_weigh_ins, 2_000.0, 0.1),
+            estimate_tdee(day(20), &days, &few_weigh_ins, 2_000.0),
             AdaptiveOutcome::InsufficientData {
                 logged_days: 21,
                 weigh_in_days: 5
@@ -346,7 +377,7 @@ mod tests {
         );
         // Aucune donnée.
         assert_eq!(
-            estimate_tdee(day(20), &[], &[], 2_000.0, 0.1),
+            estimate_tdee(day(20), &[], &[], 2_000.0),
             AdaptiveOutcome::InsufficientData {
                 logged_days: 0,
                 weigh_in_days: 0
@@ -360,7 +391,7 @@ mod tests {
         let (days, weigh_ins) = simulate(60, 2_000.0, |_| 2_000.0, |_| 0.0);
         let old_days: Vec<DayRecord> = days.iter().copied().take(39).collect();
         assert_eq!(
-            estimate_tdee(day(59), &old_days, &weigh_ins, 2_000.0, 0.1),
+            estimate_tdee(day(59), &old_days, &weigh_ins, 2_000.0),
             AdaptiveOutcome::InsufficientData {
                 logged_days: 0,
                 weigh_in_days: 21
@@ -376,7 +407,7 @@ mod tests {
             d.eaten_kcal = 300.0;
             d.marked_complete = false;
         }
-        let e = estimated(estimate_tdee(day(20), &days, &weigh_ins, 2_000.0, 0.1));
+        let e = estimated(estimate_tdee(day(20), &days, &weigh_ins, 2_000.0));
         assert_eq!(e.logged_days, 16);
         assert!((e.mean_intake_kcal - 2_000.0).abs() < 1e-9);
         assert!((e.raw_tdee_base - 2_000.0).abs() < 1e-6);
@@ -386,15 +417,15 @@ mod tests {
     fn change_is_damped_to_100_kcal() {
         let (days, weigh_ins) = simulate(21, 2_000.0, |_| 2_000.0, |_| 0.0);
         // L'estimation précédente était trop haute de 400 kcal.
-        let e = estimated(estimate_tdee(day(20), &days, &weigh_ins, 2_400.0, 0.1));
+        let e = estimated(estimate_tdee(day(20), &days, &weigh_ins, 2_400.0));
         assert!((e.raw_tdee_base - 2_000.0).abs() < 1e-6);
         assert!((e.tdee_base - 2_300.0).abs() < 1e-6);
         assert!(e.was_damped());
         // Trop basse de 250 kcal : +100 seulement.
-        let e = estimated(estimate_tdee(day(20), &days, &weigh_ins, 1_750.0, 0.1));
+        let e = estimated(estimate_tdee(day(20), &days, &weigh_ins, 1_750.0));
         assert!((e.tdee_base - 1_850.0).abs() < 1e-6);
         // Écart de 60 kcal : appliqué en entier.
-        let e = estimated(estimate_tdee(day(20), &days, &weigh_ins, 1_940.0, 0.1));
+        let e = estimated(estimate_tdee(day(20), &days, &weigh_ins, 1_940.0));
         assert!((e.tdee_base - 2_000.0).abs() < 1e-6);
     }
 
@@ -405,8 +436,7 @@ mod tests {
         let mut tdee = 1_900.0;
         for week in 3..25 {
             let end = day(week * 7);
-            if let AdaptiveOutcome::Estimated(e) = estimate_tdee(end, &days, &weigh_ins, tdee, 0.1)
-            {
+            if let AdaptiveOutcome::Estimated(e) = estimate_tdee(end, &days, &weigh_ins, tdee) {
                 assert!((e.tdee_base - tdee).abs() <= MAX_WEEKLY_CHANGE_KCAL + 1e-9);
                 tdee = e.tdee_base;
             }
@@ -415,11 +445,76 @@ mod tests {
     }
 
     #[test]
+    fn no_bias_during_the_first_weeks() {
+        // Dès la première fenêtre complète, sans historique : vraie dépense 2 300 kcal,
+        // apport 1 750 kcal. (Avec le poids de tendance, on obtenait 2 104.)
+        let (days, weigh_ins) = simulate(21, 2_300.0, |_| 1_750.0, |_| 0.0);
+        let e = estimated(estimate_tdee(day(20), &days, &weigh_ins, 2_300.0));
+        assert!(
+            (e.raw_tdee_base - 2_300.0).abs() < 1e-6,
+            "{}",
+            e.raw_tdee_base
+        );
+        assert!((e.trend_kg_per_week + 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn daily_fluctuations_are_smoothed() {
+        // Poids stable à 70 kg, avec des variations d'eau de ± 0,6 kg d'un jour à l'autre
+        // (suite fixe, pour un test reproductible). L'estimation reste proche de l'apport.
+        let noise = [0.4, -0.6, 0.1, 0.5, -0.3, -0.5, 0.6, 0.0, -0.2, 0.3, -0.4];
+        let (days, mut weigh_ins) = simulate(21, 2_000.0, |_| 2_000.0, |_| 0.0);
+        for (i, weigh_in) in weigh_ins.iter_mut().enumerate() {
+            weigh_in.1 += noise[i % noise.len()];
+        }
+        let e = estimated(estimate_tdee(day(20), &days, &weigh_ins, 2_000.0));
+        assert!(
+            (e.raw_tdee_base - 2_000.0).abs() < 150.0,
+            "{}",
+            e.raw_tdee_base
+        );
+        // Et l'amortissement borne de toute façon l'effet sur la cible.
+        assert!((e.tdee_base - 2_000.0).abs() <= MAX_WEEKLY_CHANGE_KCAL);
+    }
+
+    #[test]
+    fn weigh_ins_too_close_together_are_not_enough() {
+        // 6 pesées, mais sur 6 jours consécutifs : pas d'évolution mesurable.
+        let (days, weigh_ins) = simulate(21, 2_000.0, |_| 2_000.0, |_| 0.0);
+        let close: Vec<(NaiveDate, f64)> = weigh_ins.iter().copied().skip(15).collect();
+        assert_eq!(
+            estimate_tdee(day(20), &days, &close, 2_000.0),
+            AdaptiveOutcome::InsufficientData {
+                logged_days: 21,
+                weigh_in_days: 6
+            }
+        );
+        // Deux pesées le même jour comptent pour leur moyenne.
+        let mut doubled = weigh_ins.clone();
+        doubled.push((day(20), 80.0));
+        doubled.push((day(20), 60.0));
+        let e = estimated(estimate_tdee(day(20), &days, &doubled, 2_000.0));
+        assert!((e.raw_tdee_base - 2_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn week_starts() {
+        // Le 15 novembre 2026 est un dimanche.
+        let sunday = NaiveDate::from_ymd_opt(2026, 11, 15).unwrap();
+        let monday = NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        assert_eq!(week_start(sunday, Weekday::Mon), monday);
+        assert_eq!(week_start(monday, Weekday::Mon), monday);
+        assert_eq!(week_start(monday + Days::new(1), Weekday::Mon), monday);
+        assert_eq!(week_start(sunday, Weekday::Sun), sunday);
+        assert_eq!(week_start(monday, Weekday::Sun), sunday - Days::new(7));
+    }
+
+    #[test]
     fn late_first_weigh_in_shortens_the_span() {
         // Les pesées ne commencent qu'au 8e jour de la fenêtre.
         let (days, weigh_ins) = simulate(21, 2_000.0, |_| 2_000.0, |_| 0.0);
         let late: Vec<(NaiveDate, f64)> = weigh_ins.iter().copied().skip(8).collect();
-        let e = estimated(estimate_tdee(day(20), &days, &late, 2_000.0, 0.1));
+        let e = estimated(estimate_tdee(day(20), &days, &late, 2_000.0));
         assert_eq!(e.weigh_in_days, 13);
         assert!((e.raw_tdee_base - 2_000.0).abs() < 1e-6);
     }

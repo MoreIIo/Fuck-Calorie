@@ -100,6 +100,22 @@ impl Food {
         Ok(self.per_100.for_grams(self.grams_for(amount, unit)?))
     }
 
+    /// Unités utilisables pour cet aliment (§3.4), dans l'ordre d'affichage : grammes
+    /// toujours, millilitres pour un liquide (densité connue), ses portions, la pièce si son
+    /// poids est connu.
+    #[must_use]
+    pub fn units(&self) -> Vec<Unit> {
+        let mut units = vec![Unit::Gram];
+        if self.density.is_some() {
+            units.push(Unit::Milliliter);
+        }
+        units.extend(self.portions.iter().map(|p| Unit::Portion(p.label.clone())));
+        if self.unit_weight_g.is_some() {
+            units.push(Unit::Piece);
+        }
+        units
+    }
+
     /// Quantité pré-remplie à l'ouverture de l'écran de saisie (§3.4) : la dernière quantité
     /// utilisée pour cet aliment, sinon la portion par défaut, sinon 100 g.
     #[must_use]
@@ -152,6 +168,76 @@ pub fn search_key(text: &str) -> String {
     }
     key.truncate(key.trim_end().len());
     key
+}
+
+/// Nombre de fautes de frappe tolérées pour un mot de la requête (§3.3 : recherche floue) :
+/// aucune jusqu'à 3 lettres, une de 4 à 7 lettres, deux au-delà.
+fn allowed_typos(word_len: usize) -> usize {
+    match word_len {
+        0..=3 => 0,
+        4..=7 => 1,
+        _ => 2,
+    }
+}
+
+/// Distance d'édition entre deux mots : insertions, suppressions, remplacements et
+/// inversions de deux lettres voisines comptent chacun pour 1.
+fn edit_distance(a: &[char], b: &[char]) -> usize {
+    let mut before: Vec<usize> = Vec::new();
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    for i in 1..=a.len() {
+        let mut current = vec![i; b.len() + 1];
+        for j in 1..=b.len() {
+            let substitution = usize::from(a[i - 1] != b[j - 1]);
+            let mut best = (previous[j] + 1)
+                .min(current[j - 1] + 1)
+                .min(previous[j - 1] + substitution);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(before[j - 2] + 1);
+            }
+            current[j] = best;
+        }
+        before = previous;
+        previous = current;
+    }
+    previous[b.len()]
+}
+
+/// Nombre de fautes entre un mot de la requête et le **début** d'un mot du texte (la
+/// recherche se fait pendant la frappe : « yahou » doit déjà trouver « yaourt »).
+fn word_typos(query: &[char], word: &[char], allowed: usize) -> usize {
+    let shortest = query.len().saturating_sub(allowed).max(1);
+    let longest = (query.len() + allowed).min(word.len());
+    (shortest..=longest)
+        .map(|len| edit_distance(query, &word[..len]))
+        .min()
+        .unwrap_or(usize::MAX)
+}
+
+/// Recherche tolérante aux fautes de frappe (§3.3). `query_key` et `text_key` sont des clés
+/// de recherche ([`search_key`]). Renvoie le nombre total de fautes si **chaque mot** de la
+/// requête correspond au début d'un mot du texte, à quelques fautes près ; `None` sinon.
+/// `Some(0)` = correspondance exacte.
+#[must_use]
+pub fn fuzzy_match(query_key: &str, text_key: &str) -> Option<usize> {
+    let words: Vec<Vec<char>> = text_key.split(' ').map(|w| w.chars().collect()).collect();
+    let mut total = 0;
+    let mut any = false;
+    for query in query_key.split(' ').filter(|w| !w.is_empty()) {
+        any = true;
+        let query: Vec<char> = query.chars().collect();
+        let allowed = allowed_typos(query.len());
+        let best = words
+            .iter()
+            .map(|word| word_typos(&query, word, allowed))
+            .min()
+            .unwrap_or(usize::MAX);
+        if best > allowed {
+            return None;
+        }
+        total += best;
+    }
+    any.then_some(total)
 }
 
 impl Food {
@@ -275,6 +361,23 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn available_units() {
+        let mut food = yaourt();
+        assert_eq!(food.units(), [Unit::Gram, Unit::Portion("1 pot".into())]);
+        food.density = Some(1.03);
+        food.unit_weight_g = Some(125.0);
+        assert_eq!(
+            food.units(),
+            [
+                Unit::Gram,
+                Unit::Milliliter,
+                Unit::Portion("1 pot".into()),
+                Unit::Piece
+            ]
+        );
+    }
+
+    #[test]
     fn search_keys() {
         assert_eq!(
             search_key("Crème fraîche 30 % M.G."),
@@ -284,6 +387,34 @@ pub(crate) mod tests {
         assert_eq!(search_key("Jalapeño"), "jalapeno");
         assert_eq!(search_key("---"), "");
         assert_eq!(yaourt().search_text(), "yaourt nature marque");
+    }
+
+    #[test]
+    fn fuzzy_search_tolerates_typos() {
+        let text = search_key("Yaourt nature au lait entier");
+        // Exact, ou début de mot : aucune faute.
+        assert_eq!(fuzzy_match("yaourt", &text), Some(0));
+        assert_eq!(fuzzy_match("yao nat", &text), Some(0));
+        // Une lettre en trop, une lettre manquante, deux lettres inversées.
+        assert_eq!(fuzzy_match("yahourt", &text), Some(1));
+        assert_eq!(fuzzy_match("yaort", &text), Some(1));
+        assert_eq!(fuzzy_match("yauort", &text), Some(1));
+        // Pendant la frappe : le mot n'est pas encore fini.
+        assert_eq!(fuzzy_match("yahou", &text), Some(1));
+        // Les fautes de chaque mot s'additionnent.
+        assert_eq!(fuzzy_match("yahourt natrue", &text), Some(2));
+        // Trop de fautes, ou un mot absent.
+        assert_eq!(fuzzy_match("yoghurt", &text), None);
+        assert_eq!(fuzzy_match("yaourt fraise", &text), None);
+        // Mots courts : aucune faute tolérée (« lit » n'est pas « lait »).
+        assert_eq!(fuzzy_match("lit", &text), None);
+        assert_eq!(fuzzy_match("au", &text), Some(0));
+        // Mots longs : deux fautes.
+        assert_eq!(
+            fuzzy_match("camenbret", &search_key("Camembert au lait cru")),
+            Some(2)
+        );
+        assert_eq!(fuzzy_match("", &text), None);
     }
 
     #[test]

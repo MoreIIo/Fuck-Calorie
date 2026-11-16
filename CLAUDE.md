@@ -6,6 +6,8 @@ est `docs/CAHIER_DES_CHARGES.md` ; l'état d'avancement est dans `docs/AVANCEMEN
 
 ## Commandes
 
+Lancer l'application : `cd app && cargo tauri dev` (prérequis dans le README).
+
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
@@ -13,6 +15,14 @@ cargo fmt --all
 ```
 
 Les trois doivent passer avant de considérer une tâche terminée.
+
+Mettre à jour la table Ciqual embarquée (nouvelle édition de l'ANSES) : relancer l'import,
+puis changer `VERSION` dans `crates/food-db/src/ciqual.rs` (c'est ce qui déclenche le
+réimport dans les bases existantes).
+
+```sh
+cargo run -p fc-food-db --example import_ciqual -- <table Ciqual FR .csv> crates/food-db/data/ciqual.tsv
+```
 
 ## Règles
 
@@ -28,6 +38,17 @@ Les trois doivent passer avant de considérer une tâche terminée.
   une et l'inscrire dans `MIGRATIONS`.
 - Toute écriture d'un objet synchronisé passe par les `upsert_*` de `fc-storage`, qui
   n'acceptent qu'une version plus récente (HLC) : c'est ce qui rend la sync idempotente.
+- Les fiches de référence (Ciqual, Open Food Facts) ont un identifiant déterministe
+  (`fc_food_db::reference_id`) : le même produit a le même identifiant sur tous les
+  appareils. Ne jamais changer ce calcul.
+- Open Food Facts : toute requête passe par `fc_food_db::client::OffClient` (User-Agent,
+  limites de débit). Jamais de requête depuis l'interface.
 - Aucun secret dans le dépôt ; jetons et clés API uniquement dans le coffre sécurisé de la
   plateforme. Aucune télémétrie.
-- Design : `border-radius: 0` partout, un seul accent (bleu Klein), cf. §6.
+- Design : `border-radius: 0` partout, un seul accent (bleu Klein), cf. §6. Styles dans
+  `app/styles/main.css`, tokens en variables CSS.
+- L'interface (`app/`, `fc-app`) ne calcule rien : elle affiche ce que renvoient les
+  commandes Tauri (`app/src-tauri/src/lib.rs`), qui appellent `fc-service`. Nouvelle
+  fonction = méthode dans `fc-service` (avec tests) → commande Tauri → appel dans
+  `app/src/api.rs` → composant.
+- `fc-app` dépend de `fc-core` **sans** la fonctionnalité `rng` (pas d'aléa en WebAssembly).

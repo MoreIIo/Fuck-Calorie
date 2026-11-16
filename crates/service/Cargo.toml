@@ -1,0 +1,24 @@
+[package]
+name = "fc-service"
+description = "Opérations de Fuck Calorie sur la base locale : ce que l'interface appelle (profil, journal, pesées)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+fc-core = { workspace = true, features = ["rng"] }
+fc-food-db.workspace = true
+fc-storage.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -9,7 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-fc-core.workspace = true
+fc-core = { workspace = true, features = ["rng"] }
 chrono.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

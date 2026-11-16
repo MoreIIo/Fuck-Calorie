@@ -8,15 +8,18 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+default = ["rng"]
+# Création d'identifiants UUID v7 (`SyncMeta::new`). Inutile à l'interface, qui ne fait
+# qu'afficher et transmettre : sans cette fonctionnalité, fc-core n'a besoin d'aucune
+# source d'aléa et se compile en WebAssembly sans configuration particulière.
+rng = ["uuid/v7"]
+
 [dependencies]
 chrono.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
-
-# Sur le web (WebAssembly), l'aléa des UUID vient du navigateur.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
 proptest.workspace = true

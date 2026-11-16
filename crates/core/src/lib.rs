@@ -20,9 +20,11 @@
 //! | [`food`] | Aliments, portions, unités et conversion en grammes | §3.4, §3.8 |
 //! | [`journal`] | Repas, entrées du journal, pesées, bilan du jour | §3.5, §3.8, §5.2 |
 //! | [`hlc`] | Horloge logique hybride et métadonnées de synchronisation | §7.2 |
+//! | [`api`] | Types échangés entre l'interface et l'application | §5.2 |
 
 pub mod activity;
 pub mod adaptive;
+pub mod api;
 pub mod energy;
 pub mod food;
 pub mod goal;

@@ -1,0 +1,33 @@
+[package]
+name = "fc-food-db"
+description = "Base de produits de Fuck Calorie : table Ciqual embarquée et client Open Food Facts."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+# Client HTTP Open Food Facts. Sans cette fonctionnalité, la crate ne contient que la table
+# Ciqual et la lecture des réponses d'Open Food Facts (aucune dépendance réseau).
+http = ["dep:reqwest", "dep:rustls"]
+
+[dependencies]
+fc-core = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid = { workspace = true, features = ["v5"] }
+# TLS : rustls avec le fournisseur `ring`, qui se compile sans outil supplémentaire sous
+# Windows comme sous Android (le fournisseur par défaut, aws-lc, demande CMake et NASM).
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "gzip", "http2"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+
+[dev-dependencies]
+# Uniquement pour l'outil d'import de la table Ciqual (`examples/import_ciqual.rs`).
+csv = "1.4"
+tokio = { version = "1", features = ["rt"] }
+
+[lints]
+workspace = true

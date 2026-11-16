@@ -1,6 +1,8 @@
 /target
 **/target
 dist/
+# Généré par Tauri.
+app/src-tauri/gen/
 *.db
 *.db-journal
 *.db-wal

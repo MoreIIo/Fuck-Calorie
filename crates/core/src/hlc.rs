@@ -165,6 +165,7 @@ pub struct SyncMeta {
 
 impl SyncMeta {
     /// Métadonnées d'un nouvel objet : identifiant UUID v7 (triable par date de création).
+    #[cfg(feature = "rng")]
     #[must_use]
     pub fn new(hlc: Hlc) -> Self {
         Self {

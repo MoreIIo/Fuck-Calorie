@@ -135,6 +135,16 @@ impl Db {
         Ok(written)
     }
 
+    /// Une entrée du journal (non supprimée).
+    pub fn log_entry(&self, id: uuid::Uuid) -> Result<Option<LogEntry>> {
+        let sql = format!("SELECT {ENTRY_COLUMNS} FROM log_entries WHERE id = ?1 AND deleted = 0");
+        Ok(self
+            .conn
+            .prepare_cached(&sql)?
+            .query_row([id_text(id)], entry_from_row)
+            .optional()?)
+    }
+
     /// Entrées d'un jour, dans l'ordre de saisie.
     pub fn log_entries_on(&self, date: NaiveDate) -> Result<Vec<LogEntry>> {
         self.log_entries_between(date, date)

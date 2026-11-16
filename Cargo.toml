@@ -1,22 +1,25 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/storage"]
+members = ["crates/core", "crates/food-db", "crates/storage", "crates/service", "app", "app/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.90"
 license = "MPL-2.0"
 repository = "https://github.com/MoreIIo/Fuck-Calorie"
 authors = ["Maëlle Leynaud"]
 
 [workspace.dependencies]
-fc-core = { path = "crates/core" }
+fc-core = { path = "crates/core", default-features = false }
+fc-food-db = { path = "crates/food-db" }
+fc-storage = { path = "crates/storage" }
+fc-service = { path = "crates/service" }
 chrono = { version = "0.4.45", default-features = false, features = ["serde", "std"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
-uuid = { version = "1.29.2", features = ["v7", "serde"] }
+uuid = { version = "1.29.2", features = ["serde"] }
 rusqlite = { version = "0.43.0", features = ["bundled"] }
 proptest = "1.12.0"
 tempfile = "3.27.0"

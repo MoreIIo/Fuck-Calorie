@@ -37,6 +37,7 @@ impl MealSlot {
 /// Les quatre repas par défaut, avec leurs plages horaires. `names` donne les noms dans la
 /// langue de l'interface (en français : Petit-déjeuner, Déjeuner, Dîner, Collation) ; le
 /// dernier n'a pas de plage et sert de repli le reste de la journée.
+#[cfg(feature = "rng")]
 #[must_use]
 pub fn default_meal_slots(names: [&str; 4], mut next_hlc: impl FnMut() -> Hlc) -> Vec<MealSlot> {
     let hm = |h, m| NaiveTime::from_hms_opt(h, m, 0);
