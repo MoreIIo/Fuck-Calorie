@@ -36,7 +36,11 @@ docs/                     Cahier des charges, avancement, références visuelles
 Prérequis : [Rust](https://rustup.rs) 1.90 ou plus récent, et les *Build Tools* de Visual
 Studio (déjà nécessaires à Rust). WebView2 est inclus dans Windows 10 et 11.
 
-Une seule fois, installer la cible WebAssembly et les deux outils de build :
+Le plus simple : double-cliquer sur **`lancer.cmd`** à la racine du dépôt. Il installe ce
+qui manque la première fois, puis ouvre l'application. `lancer installer` construit
+l'installateur Windows.
+
+À la main : une seule fois, installer la cible WebAssembly et les deux outils de build :
 
 ```sh
 rustup target add wasm32-unknown-unknown
@@ -56,6 +60,36 @@ recharge l'application. Pour produire un installateur Windows (`.msi` et `.exe` 
 `target/release/bundle/`) : `cargo tauri build`, toujours depuis `app`.
 
 Les données sont dans `%APPDATA%\io.github.moreiio.fuckcalorie\fuck-calorie.db`.
+
+## Tester sur Android
+
+À chaque envoi sur `main`, GitHub construit un APK de test (workflow
+[`android.yml`](.github/workflows/android.yml)). Depuis le téléphone, ouvrir la page
+**Releases** du dépôt, pré-version « APK de test », télécharger `fuck-calorie-test.apk` et
+l'installer (Android demande d'autoriser l'installation depuis le navigateur).
+
+Sans clé de signature enregistrée dans les secrets du dépôt (`ANDROID_KEYSTORE`,
+`ANDROID_KEYSTORE_PASSWORD`), chaque APK est signé avec une clé différente : il faut
+désinstaller l'ancien avant d'installer le nouveau, ce qui efface les données du téléphone.
+
+## Tester sur iPhone
+
+À chaque envoi sur `main`, GitHub construit aussi une IPA de test **non signée** (workflow
+[`ios.yml`](.github/workflows/ios.yml)), publiée dans la pré-version « IPA de test » de la
+page **Releases**. Une IPA non signée ne s'installe pas directement : on la signe avec son
+identifiant Apple gratuit, depuis un PC Windows.
+
+1. Sur le PC : installer [iTunes](https://www.apple.com/fr/itunes/) (version du site d'Apple,
+   pas celle du Microsoft Store) et [Sideloadly](https://sideloadly.io).
+2. Télécharger `fuck-calorie-test.ipa` depuis la page Releases.
+3. Brancher l'iPhone en USB, accepter « Faire confiance à cet ordinateur ».
+4. Dans Sideloadly : glisser l'IPA, choisir l'iPhone, saisir l'identifiant Apple, **Start**.
+5. Sur l'iPhone : *Réglages → Général → VPN et gestion de l'appareil* → faire confiance au
+   profil de son identifiant Apple ; puis *Réglages → Confidentialité et sécurité → Mode
+   développeur* → activer (l'iPhone redémarre).
+
+Avec un identifiant Apple gratuit, l'application **expire au bout de 7 jours** : refaire
+l'étape 4 (les données de l'application sont conservées tant qu'on ne la désinstalle pas).
 
 ## Développer
 

@@ -1,14 +1,14 @@
-//! Premier lancement : saisie du profil (§2.1).
+//! Saisie du profil (§2.1) : au premier lancement, puis dans *Réglages*.
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Weekday};
 use fc_core::api::ProfileInput;
 use fc_core::goal::Goal;
-use fc_core::profile::{ActivityLevel, Sex};
+use fc_core::profile::{ActivityLevel, Profile, Sex};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::api;
-use crate::format::parse_number;
+use crate::format::{one_decimal, parse_number, weekday};
 
 const ACTIVITY_LEVELS: [(ActivityLevel, &str); 5] = [
     (ActivityLevel::Sedentary, "Sédentaire"),
@@ -16,6 +16,16 @@ const ACTIVITY_LEVELS: [(ActivityLevel, &str); 5] = [
     (ActivityLevel::ModeratelyActive, "Modérément actif"),
     (ActivityLevel::VeryActive, "Très actif"),
     (ActivityLevel::ExtremelyActive, "Extrêmement actif"),
+];
+
+const WEEKDAYS: [Weekday; 7] = [
+    Weekday::Mon,
+    Weekday::Tue,
+    Weekday::Wed,
+    Weekday::Thu,
+    Weekday::Fri,
+    Weekday::Sat,
+    Weekday::Sun,
 ];
 
 #[derive(Clone, Copy, PartialEq)]
@@ -26,16 +36,90 @@ enum Mode {
     Recomp,
 }
 
+/// Premier lancement.
 #[component]
 pub fn Onboarding(today: NaiveDate, reload: RwSignal<u32>) -> impl IntoView {
-    let sex = RwSignal::new(Sex::Female);
-    let birth = RwSignal::new(String::new());
-    let height = RwSignal::new(String::new());
-    let weight = RwSignal::new(String::new());
-    let goal_weight = RwSignal::new(String::new());
-    let mode = RwSignal::new(Mode::Lose);
-    let rate = RwSignal::new(0.5_f64);
-    let activity = RwSignal::new(0_usize);
+    view! {
+        <div class="onboarding">
+            <div>
+                <p class="label">"Bienvenue"</p>
+                <h1 class="h1">"Ton profil"</h1>
+                <p class="muted">
+                    "Ces informations servent à estimer ta dépense de départ. Elles restent sur cet appareil."
+                </p>
+            </div>
+            <ProfileForm
+                initial=None
+                today=today
+                submit_label="Commencer"
+                on_saved=Callback::new(move |()| reload.update(|n| *n += 1))
+            />
+        </div>
+    }
+}
+
+/// Formulaire du profil. Sans profil `initial` (premier lancement), il demande aussi le
+/// poids actuel ; avec, il propose le premier jour de la semaine et garde le poids (le suivi
+/// passe par les pesées, §2.8).
+#[component]
+pub fn ProfileForm(
+    initial: Option<Profile>,
+    today: NaiveDate,
+    submit_label: &'static str,
+    on_saved: Callback<()>,
+) -> impl IntoView {
+    let editing = initial.is_some();
+    let number = |v: f64| one_decimal(v).replace(",0", "");
+    let sex = RwSignal::new(initial.as_ref().map_or(Sex::Female, |p| p.sex));
+    let birth = RwSignal::new(
+        initial
+            .as_ref()
+            .map(|p| p.birth_date.to_string())
+            .unwrap_or_default(),
+    );
+    let height = RwSignal::new(
+        initial
+            .as_ref()
+            .map(|p| number(p.height_cm))
+            .unwrap_or_default(),
+    );
+    let weight = RwSignal::new(
+        initial
+            .as_ref()
+            .map(|p| one_decimal(p.weight_kg))
+            .unwrap_or_default(),
+    );
+    let goal_weight = RwSignal::new(
+        initial
+            .as_ref()
+            .map(|p| one_decimal(p.goal_weight_kg))
+            .unwrap_or_default(),
+    );
+    let (initial_mode, initial_rate) = match initial.as_ref().map(|p| p.goal) {
+        None | Some(Goal::Lose { .. }) => (
+            Mode::Lose,
+            initial
+                .as_ref()
+                .and_then(|p| p.goal.target_kg_per_week())
+                .map_or(0.5, f64::abs),
+        ),
+        Some(Goal::Maintain) => (Mode::Maintain, 0.5),
+        Some(Goal::Gain { kg_per_week }) => (Mode::Gain, kg_per_week),
+        Some(Goal::Recomp) => (Mode::Recomp, 0.5),
+    };
+    let mode = RwSignal::new(initial_mode);
+    let rate = RwSignal::new(initial_rate);
+    let activity = RwSignal::new(
+        initial
+            .as_ref()
+            .and_then(|p| {
+                ACTIVITY_LEVELS
+                    .iter()
+                    .position(|(l, _)| *l == p.activity_level)
+            })
+            .unwrap_or(0),
+    );
+    let week_start = RwSignal::new(initial.as_ref().map_or(Weekday::Mon, |p| p.week_start));
     let error = RwSignal::new(None::<String>);
     let saving = RwSignal::new(false);
 
@@ -50,9 +134,11 @@ pub fn Onboarding(today: NaiveDate, reload: RwSignal<u32>) -> impl IntoView {
             parse_number(&weight.get()),
             parse_number(&goal_weight.get()),
         ) else {
-            error.set(Some(
-                "Indique ta taille, ton poids et ton poids objectif.".into(),
-            ));
+            error.set(Some(if editing {
+                "Indique ta taille et ton poids objectif.".into()
+            } else {
+                "Indique ta taille, ton poids et ton poids objectif.".into()
+            }));
             return;
         };
         let goal = match mode.get() {
@@ -73,14 +159,18 @@ pub fn Onboarding(today: NaiveDate, reload: RwSignal<u32>) -> impl IntoView {
             goal_weight_kg,
             goal,
             activity_level: ACTIVITY_LEVELS[activity.get()].0,
+            week_start: editing.then(|| week_start.get()),
         };
+        error.set(None);
         saving.set(true);
         spawn_local(async move {
             match api::save_profile(input, today).await {
-                Ok(_) => reload.update(|n| *n += 1),
-                Err(message) => error.set(Some(message)),
+                Ok(_) => on_saved.run(()),
+                Err(message) => {
+                    let _ = error.try_set(Some(message));
+                }
             }
-            saving.set(false);
+            let _ = saving.try_set(false);
         });
     };
 
@@ -142,14 +232,7 @@ pub fn Onboarding(today: NaiveDate, reload: RwSignal<u32>) -> impl IntoView {
         };
 
     view! {
-        <form class="onboarding" on:submit=submit>
-            <div>
-                <p class="label">"Bienvenue"</p>
-                <h1 class="h1">"Ton profil"</h1>
-                <p class="muted">
-                    "Ces informations servent à estimer ta dépense de départ. Elles restent sur cet appareil."
-                </p>
-            </div>
+        <form class="profile-form" on:submit=submit>
             <div class="glass card">
                 <div class="field">
                     <span class="label">"Sexe pour le calcul"</span>
@@ -170,7 +253,7 @@ pub fn Onboarding(today: NaiveDate, reload: RwSignal<u32>) -> impl IntoView {
                 </label>
                 <div class="row">
                     {text_field("Taille (cm)", height, "170")}
-                    {text_field("Poids (kg)", weight, "70,0")}
+                    {(!editing).then(|| text_field("Poids (kg)", weight, "70,0"))}
                     {text_field("Poids objectif (kg)", goal_weight, "62,0")}
                 </div>
             </div>
@@ -220,11 +303,54 @@ pub fn Onboarding(today: NaiveDate, reload: RwSignal<u32>) -> impl IntoView {
                             .collect_view()}
                     </select>
                 </label>
+                {editing
+                    .then(|| {
+                        view! {
+                            <label class="field">
+                                <span class="label">
+                                    "Premier jour de la semaine (jour du bilan)"
+                                </span>
+                                <select
+                                    class="select"
+                                    on:change=move |ev| {
+                                        let index: usize = event_target_value(&ev)
+                                            .parse()
+                                            .unwrap_or(0);
+                                        week_start.set(WEEKDAYS[index.min(6)]);
+                                    }
+                                >
+                                    {WEEKDAYS
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(i, day)| {
+                                            let day = *day;
+                                            view! {
+                                                <option
+                                                    value=i.to_string()
+                                                    selected=move || week_start.get() == day
+                                                >
+                                                    {capitalized(weekday(day))}
+                                                </option>
+                                            }
+                                        })
+                                        .collect_view()}
+                                </select>
+                            </label>
+                        }
+                    })}
             </div>
             {move || error.get().map(|message| view! { <p class="error">{message}</p> })}
             <button class="btn primary block" type="submit" disabled=move || saving.get()>
-                "Commencer"
+                {submit_label}
             </button>
         </form>
     }
+}
+
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }

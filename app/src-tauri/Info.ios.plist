@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Fusionné par Tauri dans l'Info.plist de l'application iOS. -->
+<plist version="1.0">
+<dict>
+	<!-- Obligatoire pour la caméra (scan de code-barres, §4.2) : sans ce texte, iOS ferme
+	     l'application à la première ouverture de la caméra. -->
+	<key>NSCameraUsageDescription</key>
+	<string>La caméra sert à scanner le code-barres des produits. Aucune image n'est enregistrée ni envoyée.</string>
+</dict>
+</plist>

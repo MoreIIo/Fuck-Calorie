@@ -6,6 +6,23 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) ; le
 ## [Non publié]
 
 ### Ajouté
+- Workflow GitHub qui construit une IPA iPhone de test, non signée (pré-version
+  « ipa-test »), à installer avec Sideloadly ; description d'accès à la caméra pour iOS ;
+  marges de l'encoche de l'iPhone.
+- Scan de code-barres sur Android et iOS (plugin officiel `barcode-scanner` de Tauri) :
+  bouton dans la recherche et sur l'accueil, viseur, vibration au scan réussi ; produit
+  inconnu → création d'un aliment personnel avec ce code-barres. Sur tous les appareils, un
+  code-barres tapé dans la recherche s'ouvre directement.
+- Aliments personnels : code-barres facultatif (un scan ouvre ensuite cet aliment).
+- Navigation : barre en bas sur mobile, rail à gauche sur PC (*Aujourd'hui · Progrès · + ·
+  Réglages*) ; le « + » ouvre la feuille d'ajout depuis n'importe quel écran.
+- Écran *Progrès* : périodes 7 j · 30 j · 90 j · 1 an · Tout, graphique du poids (pesées,
+  tendance, objectif, projection), graphique « Calories vs cible » (par semaine au-delà de
+  90 jours, moyenne de la période, un clic ouvre le journal du jour), bilan de la semaine.
+- Écran *Réglages* : modifier le profil (historisé), choisir le premier jour de la semaine,
+  figer la cible, à propos (sources des données, confidentialité, licence).
+- `lancer.cmd` : lance l'application sur Windows en installant ce qui manque.
+- Workflow GitHub qui construit un APK Android de test (pré-version « apk-test »).
 - Recalcul hebdomadaire de la dépense (algorithme adaptatif) à la première ouverture de la
   semaine, carte « Bilan de la semaine », cible figeable.
 - Journal : modifier la quantité ou le repas d'une ligne, copier un repas ou toute la journée
@@ -34,5 +51,6 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) ; le
   d'aliments insensible aux accents, journal, pesées, activités, profil, réglages.
 
 ### Modifié
+- Modifier le profil sans changer le poids n'ajoute plus de pesée.
 - Algorithme adaptatif : la variation du poids est mesurée par régression sur les pesées, ce
   qui supprime la sous-estimation de la dépense pendant les premières semaines.

@@ -59,11 +59,7 @@ pub fn user_agent(version: &str) -> String {
     format!("FuckCalorie/{version} (https://github.com/MoreIIo/Fuck-Calorie)")
 }
 
-/// Un code-barres de produit : 8 à 14 chiffres (EAN-8, UPC-A, EAN-13, ITF-14).
-#[must_use]
-pub fn is_barcode(text: &str) -> bool {
-    (8..=14).contains(&text.len()) && text.bytes().all(|b| b.is_ascii_digit())
-}
+pub use fc_core::food::is_barcode;
 
 /// Encode un texte pour une adresse (`café au lait` → `caf%C3%A9%20au%20lait`).
 fn url_encode(text: &str) -> String {

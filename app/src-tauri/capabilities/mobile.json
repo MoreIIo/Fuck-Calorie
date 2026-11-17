@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Mobile uniquement : scan de code-barres (caméra, vibration au scan réussi).",
+  "windows": ["main"],
+  "platforms": ["android", "iOS"],
+  "permissions": ["barcode-scanner:default"]
+}

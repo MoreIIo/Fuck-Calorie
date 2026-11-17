@@ -25,6 +25,10 @@ serde_json.workspace = true
 uuid.workspace = true
 tauri = { version = "2.12", features = [] }
 
+# Scan de code-barres (§4.2) : mobile uniquement (§4.1).
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-barcode-scanner = "2.5"
+
 # Pas de `[lints] workspace = true` : les macros de Tauri génèrent du code `unsafe`.
 [lints.clippy]
 all = { level = "warn", priority = -1 }

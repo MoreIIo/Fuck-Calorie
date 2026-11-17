@@ -11,7 +11,7 @@ authors.workspace = true
 [features]
 # Client HTTP Open Food Facts. Sans cette fonctionnalité, la crate ne contient que la table
 # Ciqual et la lecture des réponses d'Open Food Facts (aucune dépendance réseau).
-http = ["dep:reqwest", "dep:rustls"]
+http = ["dep:reqwest", "dep:rustls", "dep:webpki-roots"]
 
 [dependencies]
 fc-core = { workspace = true }
@@ -24,7 +24,14 @@ uuid = { workspace = true, features = ["v5"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "json", "gzip", "http2"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 
+# Android : les certificats racine sont embarqués. Le vérificateur du système, utilisé sous
+# Windows et ailleurs, a besoin sur Android d'une initialisation côté Java que Tauri ne fait pas.
+[target.'cfg(target_os = "android")'.dependencies]
+webpki-roots = { version = "1.0", optional = true }
+
 [dev-dependencies]
+# Pour tester sur PC la configuration TLS d'Android.
+webpki-roots = "1.0"
 # Uniquement pour l'outil d'import de la table Ciqual (`examples/import_ciqual.rs`).
 csv = "1.4"
 tokio = { version = "1", features = ["rt"] }

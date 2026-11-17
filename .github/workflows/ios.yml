@@ -1,0 +1,91 @@
+name: IPA iOS (test)
+
+# Construit une IPA de test **non signée** pour iPhone (arm64), à installer depuis un PC avec
+# Sideloadly ou AltStore et un identifiant Apple gratuit (cf. README, « Installer sur
+# iPhone »). L'application installée ainsi expire au bout de 7 jours : la réinstaller.
+#
+# - Se lance à chaque envoi sur `main`, ou à la main : onglet Actions → « IPA iOS (test) »
+#   → Run workflow.
+# - L'IPA est publiée dans la pré-version « ipa-test » (page Releases du dépôt), et jointe à
+#   l'exécution (section Artifacts).
+#
+# Une version signée (TestFlight, App Store) demandera le programme Apple Developer
+# (99 $/an, cahier des charges §7.5) : c'est prévu pour la V1.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore: ["docs/**", "**.md"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ipa:
+    name: IPA (arm64, non signée)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios, wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios
+
+      - uses: cargo-bins/cargo-binstall@main
+
+      - name: Outils (Tauri, Trunk, XcodeGen)
+        run: |
+          cargo binstall --no-confirm tauri-cli@2 trunk
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+
+      # Le projet Xcode (app/src-tauri/gen/apple) n'est pas versionné : il est généré ici.
+      - name: Projet Xcode
+        working-directory: app
+        run: cargo tauri ios init --ci
+
+      # `--no-sign` : archive sans signature et range l'app dans Payload/, sans l'étape
+      # d'export qui demanderait une équipe Apple. Sideloadly signe ensuite l'IPA.
+      - name: Compilation
+        working-directory: app
+        run: cargo tauri ios build --ci --target aarch64 --no-sign
+
+      - name: IPA
+        run: |
+          set -euo pipefail
+          ipa=$(find app/src-tauri/gen/apple/build -name '*.ipa' | head -n 1)
+          if [ -z "$ipa" ]; then
+            echo "IPA introuvable. Fichiers produits :"
+            find app/src-tauri/gen/apple/build -maxdepth 3 || true
+            exit 1
+          fi
+          mkdir -p dist-ipa
+          cp "$ipa" dist-ipa/fuck-calorie-test.ipa
+          unzip -l dist-ipa/fuck-calorie-test.ipa | head -n 20
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fuck-calorie-ipa
+          path: dist-ipa/fuck-calorie-test.ipa
+          retention-days: 30
+
+      - name: Pré-version « ipa-test »
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete ipa-test --yes --cleanup-tag 2>/dev/null || true
+          gh release create ipa-test dist-ipa/fuck-calorie-test.ipa \
+            --prerelease --target "$GITHUB_SHA" \
+            --title "IPA de test (iPhone, non signée)" \
+            --notes "Construit automatiquement depuis ${GITHUB_SHA::7}. Non signée : à installer avec Sideloadly ou AltStore et un identifiant Apple (l'application expire au bout de 7 jours). Version de test, pas une version publiée."
