@@ -19,6 +19,7 @@
 //! | [`activity`] | Activités physiques, estimation MET, calories Strava | §2.6 |
 //! | [`food`] | Aliments, portions, unités et conversion en grammes | §3.4, §3.8 |
 //! | [`journal`] | Repas, entrées du journal, pesées, bilan du jour | §3.5, §3.8, §5.2 |
+//! | [`progress`] | Périodes de l'écran *Progrès*, regroupement des calories par semaine | §5.3 |
 //! | [`hlc`] | Horloge logique hybride et métadonnées de synchronisation | §7.2 |
 //! | [`api`] | Types échangés entre l'interface et l'application | §5.2 |
 
@@ -33,6 +34,7 @@ pub mod journal;
 pub mod macros;
 pub mod nutrients;
 pub mod profile;
+pub mod progress;
 pub mod trend;
 
 pub use goal::{CalorieTarget, Goal};

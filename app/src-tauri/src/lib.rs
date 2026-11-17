@@ -10,10 +10,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{NaiveDate, NaiveTime};
 use fc_core::api::{
-    CustomFoodInput, EntryDetail, FoodDetail, FoodHit, LogFoodInput, ProfileInput, QuickAddInput,
-    SavedMealView, TodayView, UpdateEntryInput, WeekReport,
+    CustomFoodInput, EntryDetail, FoodDetail, FoodHit, LogFoodInput, ProfileInput, ProgressView,
+    QuickAddInput, SavedMealView, SettingsView, TodayView, UpdateEntryInput, WeekReport,
 };
 use fc_core::profile::Profile;
+use fc_core::progress::ProgressPeriod;
 use fc_food_db::client::OffClient;
 use fc_service::{Service, ServiceError};
 use tauri::{Manager, State};
@@ -67,6 +68,22 @@ fn save_profile(
     today: NaiveDate,
 ) -> CmdResult<Profile> {
     with_service(&state, |s| s.save_profile(input, today, now_ms()))
+}
+
+/// Écran *Réglages*.
+#[tauri::command]
+fn settings(state: State<'_, AppState>, today: NaiveDate) -> CmdResult<SettingsView> {
+    with_service(&state, |s| s.settings(today))
+}
+
+/// Écran *Progrès* (§5.3).
+#[tauri::command]
+fn progress(
+    state: State<'_, AppState>,
+    period: ProgressPeriod,
+    today: NaiveDate,
+) -> CmdResult<ProgressView> {
+    with_service(&state, |s| s.progress(period, today))
 }
 
 #[tauri::command]
@@ -224,40 +241,78 @@ async fn search_off(
     with_service(&state, |s| s.off_hits(&foods))
 }
 
-/// Ouvre un produit par son code-barres : fiche locale si elle est à jour, sinon Open Food
-/// Facts (la fiche est alors copiée en local, §3.2). Sans réseau, une fiche locale ancienne
-/// est utilisée telle quelle.
+/// Cherche un produit par son code-barres : aliment personnel ou fiche locale à jour, sinon
+/// Open Food Facts (la fiche est alors copiée en local, §3.2). Sans réseau, une fiche locale
+/// ancienne est utilisée telle quelle. `None` : produit inconnu (§4.2, étape 5).
+async fn lookup_barcode(
+    state: &State<'_, AppState>,
+    off: &State<'_, OffState>,
+    barcode: &str,
+) -> CmdResult<Option<FoodDetail>> {
+    let local = with_service(state, |s| s.local_product(barcode, now_ms()))?;
+    let stale = match local {
+        Some((detail, true)) => return Ok(Some(detail)),
+        Some((detail, false)) => Some(detail),
+        None => None,
+    };
+    let fetched = match off.as_ref() {
+        Some(client) => client
+            .product(barcode, now_ms())
+            .await
+            .map_err(|e| e.to_string()),
+        None => Err(OFFLINE_ONLY.to_owned()),
+    };
+    match (fetched, stale) {
+        (Ok(Some(food)), _) => {
+            with_service(state, |s| s.cache_off_product(food, now_ms())).map(Some)
+        }
+        (_, Some(detail)) => Ok(Some(detail)),
+        (Ok(None), None) => Ok(None),
+        (Err(error), None) => Err(error),
+    }
+}
+
+/// Ouvre un produit d'Open Food Facts trouvé par la recherche en ligne.
 #[tauri::command]
 async fn off_product(
     state: State<'_, AppState>,
     off: State<'_, OffState>,
     barcode: String,
 ) -> CmdResult<FoodDetail> {
-    let local = with_service(&state, |s| s.local_product(&barcode, now_ms()))?;
-    let stale = match local {
-        Some((detail, true)) => return Ok(detail),
-        Some((detail, false)) => Some(detail),
-        None => None,
-    };
-    let fetched = match off.as_ref() {
-        Some(client) => client
-            .product(&barcode, now_ms())
-            .await
-            .map_err(|e| e.to_string()),
-        None => Err(OFFLINE_ONLY.to_owned()),
-    };
-    match (fetched, stale) {
-        (Ok(Some(food)), _) => with_service(&state, |s| s.cache_off_product(food, now_ms())),
-        (_, Some(detail)) => Ok(detail),
-        (Ok(None), None) => Err("produit introuvable sur Open Food Facts".to_owned()),
-        (Err(error), None) => Err(error),
-    }
+    lookup_barcode(&state, &off, &barcode)
+        .await?
+        .ok_or_else(|| "produit introuvable sur Open Food Facts".to_owned())
 }
 
-/// Point d'entrée (bureau et, plus tard, mobile).
+/// Code-barres scanné ou tapé (§4.2) : l'écran de quantité du produit, ou `None` s'il est
+/// inconnu (l'interface propose alors de le créer).
+#[tauri::command]
+async fn barcode_product(
+    state: State<'_, AppState>,
+    off: State<'_, OffState>,
+    barcode: String,
+) -> CmdResult<Option<FoodDetail>> {
+    let barcode = barcode.trim();
+    if !fc_core::food::is_barcode(barcode) {
+        return Err(format!("« {barcode} » n'est pas un code-barres de produit"));
+    }
+    lookup_barcode(&state, &off, barcode).await
+}
+
+/// Le scan de code-barres est-il disponible ? Mobile uniquement (§4.1) : sur PC, le bouton
+/// de scan n'apparaît pas.
+#[tauri::command]
+fn can_scan() -> bool {
+    cfg!(mobile)
+}
+
+/// Point d'entrée (bureau et mobile).
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(mobile)]
+    let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
+    builder
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -292,6 +347,10 @@ pub fn run() {
             delete_saved_meal,
             week_report,
             set_target_frozen,
+            settings,
+            progress,
+            can_scan,
+            barcode_product,
         ])
         .run(tauri::generate_context!())
         .expect("impossible de démarrer Fuck Calorie");

@@ -11,7 +11,7 @@ use crate::format::{
     day_month, day_title, int, long_date, one_decimal, parse_number, short_date, signed_int,
     signed_one_decimal,
 };
-use crate::icons::{IconClose, IconLeft, IconPlus, IconRight};
+use crate::icons::{IconBarcode, IconClose, IconLeft, IconRight};
 
 #[component]
 pub fn Today(
@@ -21,13 +21,22 @@ pub fn Today(
     today: NaiveDate,
     date: RwSignal<NaiveDate>,
     reload: RwSignal<u32>,
+    /// Bouton « + » de la navigation (§5.1) : ouvre la feuille d'ajout.
+    add_requested: RwSignal<bool>,
 ) -> impl IntoView {
     // Feuille d'ajout : `Some(repas pré-sélectionné)` quand elle est ouverte.
     let sheet = RwSignal::new(None::<SheetRequest>);
-    let suggested = data
+    let suggested_meal = data
         .suggested_meal_id
-        .or_else(|| data.meals.first().map(|m| m.id))
-        .map(SheetRequest::Add);
+        .or_else(|| data.meals.first().map(|m| m.id));
+    let suggested = suggested_meal.map(SheetRequest::Add);
+    let can_scan = expect_context::<crate::Shell>().can_scan;
+    Effect::new(move |_| {
+        if add_requested.get() {
+            add_requested.set(false);
+            sheet.set(suggested);
+        }
+    });
     // Journée encore vide : proposer de recopier celle de la veille (§3.6).
     let day_empty = data.meals.iter().all(|m| m.entries.is_empty());
     let copy_error = RwSignal::new(None::<String>);
@@ -98,6 +107,16 @@ pub fn Today(
             <div class="stack">
                 {report_top.map(|r| view! { <WeekCard report=r reload=reload /> })}
                 <Hero data=data.clone() />
+                // Scan depuis l'accueil (§4.2), sur mobile seulement (§4.1).
+                <Show when=move || can_scan.get() && suggested_meal.is_some()>
+                    <button
+                        class="btn block scan-cta"
+                        on:click=move |_| sheet.set(suggested_meal.map(SheetRequest::Scan))
+                    >
+                        <IconBarcode />
+                        "Scanner un produit"
+                    </button>
+                </Show>
             </div>
             <div class="stack">
                 {data
@@ -159,10 +178,6 @@ pub fn Today(
                 </button>
             </div>
         </div>
-
-        <button class="fab" aria-label="Ajouter (N)" on:click=move |_| sheet.set(suggested)>
-            <IconPlus />
-        </button>
 
         {move || {
             sheet
@@ -515,7 +530,7 @@ fn WeightCard(
 /// Carte « Bilan de la semaine » (§5.4) : la semaine écoulée, puis le résultat du recalcul
 /// hebdomadaire de la dépense, expliqué en une phrase (§2.3). Ton neutre (§2.7).
 #[component]
-fn WeekCard(report: WeekReport, reload: RwSignal<u32>) -> impl IntoView {
+pub fn WeekCard(report: WeekReport, reload: RwSignal<u32>) -> impl IntoView {
     let period = format!("du {} au {}", day_month(report.from), day_month(report.to));
     let mut lines = vec![format!("Jours journalisés : {} sur 7", report.logged_days)];
     if let (Some(eaten), Some(target)) = (report.mean_eaten_kcal, report.mean_target_kcal) {

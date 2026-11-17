@@ -95,7 +95,7 @@ const MONTHS: [&str; 12] = [
     "décembre",
 ];
 
-fn weekday(day: Weekday) -> &'static str {
+pub fn weekday(day: Weekday) -> &'static str {
     match day {
         Weekday::Mon => "lundi",
         Weekday::Tue => "mardi",

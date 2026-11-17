@@ -3,7 +3,7 @@
 //! Uniquement des données sérialisables, sans logique : l'interface affiche, l'application
 //! calcule. Les champs sont en `snake_case` des deux côtés.
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Weekday};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -12,6 +12,7 @@ use crate::goal::Goal;
 use crate::macros::MacroTargets;
 use crate::nutrients::{NutrientFacts, Nutrients};
 use crate::profile::{ActivityLevel, Sex};
+use crate::progress::{CalorieBar, ProgressPeriod};
 
 /// Saisie du profil (écran de démarrage et réglages, §2.1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -23,6 +24,18 @@ pub struct ProfileInput {
     pub goal_weight_kg: f64,
     pub goal: Goal,
     pub activity_level: ActivityLevel,
+    /// Premier jour de la semaine (§2.1), réglable dans *Réglages*. `None` : inchangé
+    /// (lundi pour un nouveau profil).
+    #[serde(default)]
+    pub week_start: Option<Weekday>,
+}
+
+/// Écran *Réglages* : le profil en vigueur et les options de la cible.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SettingsView {
+    pub profile: crate::profile::Profile,
+    /// La cible est figée à la main (§2.3).
+    pub target_frozen: bool,
 }
 
 /// Ajout rapide (§3.6) : des calories et, facultativement, les macros.
@@ -120,6 +133,9 @@ pub struct CustomFoodInput {
     pub portion_g: Option<f64>,
     /// Liquide : les valeurs sont pour 100 ml.
     pub liquid: bool,
+    /// Code-barres, facultatif (§3.7) : scanner ce produit ouvre alors cet aliment.
+    #[serde(default)]
+    pub barcode: Option<String>,
 }
 
 /// Un repas enregistré (§3.6), tel qu'affiché dans la liste.
@@ -249,4 +265,38 @@ pub struct WeekReport {
     pub window_weigh_in_days: usize,
     /// La cible est figée à la main (§2.3) : le recalcul est calculé mais pas appliqué.
     pub frozen: bool,
+}
+
+/// Un point d'un graphique de poids.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WeightPoint {
+    pub date: NaiveDate,
+    pub kg: f64,
+}
+
+/// Écran *Progrès* (§5.3) pour une période.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProgressView {
+    pub period: ProgressPeriod,
+    /// Premier et dernier jour affichés (le dernier est aujourd'hui).
+    pub from: NaiveDate,
+    pub to: NaiveDate,
+    /// Pesées de la période (moyenne du jour s'il y en a plusieurs).
+    pub weigh_ins: Vec<WeightPoint>,
+    /// Poids de tendance, un point par jour de la période couvert par les pesées.
+    pub trend: Vec<WeightPoint>,
+    /// Variation du poids de tendance sur la période (négatif = perte).
+    pub trend_change_kg: Option<f64>,
+    pub goal_weight_kg: f64,
+    /// Date estimée d'atteinte du poids objectif (§2.4), pour la projection.
+    pub projected_goal_date: Option<NaiveDate>,
+    /// Les barres de calories sont-elles des semaines (au-delà de 90 jours) ?
+    pub weekly: bool,
+    pub calories: Vec<CalorieBar>,
+    /// Moyennes des jours journalisés de la période.
+    pub mean_eaten_kcal: Option<f64>,
+    pub mean_target_kcal: Option<f64>,
+    pub logged_days: u32,
+    /// Nombre de jours de la période.
+    pub days: u32,
 }

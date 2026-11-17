@@ -14,12 +14,12 @@ use fc_core::activity::activity_kcal_on;
 use fc_core::adaptive::{AdaptiveOutcome, DayRecord, WINDOW_DAYS, estimate_tdee, week_start};
 use fc_core::api::{
     CustomFoodInput, EntryDetail, EntryView, FoodDetail, FoodHit, LogFoodInput, MealView,
-    ProfileInput, QuickAddInput, SavedMealView, TodayView, UpdateEntryInput, WeekReport,
-    WeightView,
+    ProfileInput, ProgressView, QuickAddInput, SavedMealView, SettingsView, TodayView,
+    UpdateEntryInput, WeekReport, WeightPoint, WeightView,
 };
 use fc_core::energy::initial_tdee_for;
-use fc_core::food::{Food, FoodSource, Portion, QuantityError};
-use fc_core::goal::{Goal, base_target, projected_goal_date};
+use fc_core::food::{Food, FoodSource, Portion, QuantityError, is_barcode};
+use fc_core::goal::{Goal, base_target, day_target_kcal, projected_goal_date};
 use fc_core::hlc::{Hlc, HlcClock, SyncMeta};
 use fc_core::journal::{
     DayStatus, LogEntry, MealSlot, SavedMeal, SavedMealItem, WeighIn, day_summary,
@@ -28,7 +28,8 @@ use fc_core::journal::{
 use fc_core::macros::default_macro_targets;
 use fc_core::nutrients::Nutrients;
 use fc_core::profile::{Profile, ProfileError, ProfileRevision, profile_on};
-use fc_core::trend::{DEFAULT_ALPHA, trend_change, trend_on, trend_series};
+use fc_core::progress::{ProgressPeriod, calorie_bars, period_means, weekly_buckets};
+use fc_core::trend::{DEFAULT_ALPHA, TrendPoint, trend_change, trend_on, trend_series};
 use fc_food_db::{ciqual, off};
 use fc_storage::{Db, StorageError};
 use uuid::Uuid;
@@ -189,7 +190,10 @@ impl Service {
             goal_weight_kg: input.goal_weight_kg,
             goal: input.goal,
             activity_level: input.activity_level,
-            week_start: previous.map_or(chrono::Weekday::Mon, |p| p.week_start),
+            week_start: input
+                .week_start
+                .or(previous.as_ref().map(|p| p.week_start))
+                .unwrap_or(chrono::Weekday::Mon),
         };
         profile.validate(today)?;
 
@@ -214,10 +218,23 @@ impl Service {
         };
         self.db.upsert_profile_revision(&revision)?;
 
-        if self.db.weigh_ins_between(today, today)?.is_empty() {
+        // Le poids saisi devient la pesée du jour au premier profil, ou s'il a été changé.
+        // Une modification des réglages qui ne touche pas au poids n'ajoute pas de pesée.
+        let weight_changed = previous
+            .as_ref()
+            .is_none_or(|p| (p.weight_kg - profile.weight_kg).abs() >= 0.05);
+        if weight_changed && self.db.weigh_ins_between(today, today)?.is_empty() {
             self.add_weigh_in(today, profile.weight_kg, now_ms)?;
         }
         Ok(profile)
+    }
+
+    /// Écran *Réglages* : le profil en vigueur le jour `today` et les options de la cible.
+    pub fn settings(&self, today: NaiveDate) -> Result<SettingsView> {
+        Ok(SettingsView {
+            profile: self.profile(today)?.ok_or(ServiceError::NoProfile)?,
+            target_frozen: self.target_frozen()?,
+        })
     }
 
     // ----- Journal --------------------------------------------------------------------------
@@ -598,13 +615,34 @@ impl Service {
                 "le poids d'une portion est compris entre 0 et 5 000 g",
             ));
         }
+        let barcode = input
+            .barcode
+            .as_deref()
+            .map(|code| code.split_whitespace().collect::<String>())
+            .filter(|code| !code.is_empty());
+        if let Some(code) = &barcode {
+            if !is_barcode(code) {
+                return Err(ServiceError::Invalid(
+                    "un code-barres compte de 8 à 14 chiffres",
+                ));
+            }
+            let taken = self
+                .db
+                .food_by_barcode(code)?
+                .is_some_and(|f| f.source == FoodSource::Custom);
+            if taken {
+                return Err(ServiceError::Invalid(
+                    "un de tes aliments porte déjà ce code-barres",
+                ));
+            }
+        }
         let brand = input.brand.trim();
         let hlc = self.tick(now_ms)?;
         let food = Food {
             meta: SyncMeta::new(hlc),
             source: FoodSource::Custom,
             source_ref: None,
-            barcode: None,
+            barcode,
             name: name.to_owned(),
             brand: (!brand.is_empty()).then(|| brand.chars().take(80).collect()),
             per_100: n,
@@ -935,6 +973,102 @@ impl Service {
         Ok(Some(report))
     }
 
+    // ----- Écran « Progrès » (§5.3) ---------------------------------------------------------
+
+    /// Graphiques de l'écran *Progrès* pour `period`, jusqu'à `today` inclus.
+    ///
+    /// La cible de chaque jour est recalculée comme sur l'écran *Aujourd'hui* : profil en
+    /// vigueur ce jour-là (§2.1), dépense estimée à cette date (§2.3), poids de tendance du
+    /// jour et activités enregistrées.
+    pub fn progress(&self, period: ProgressPeriod, today: NaiveDate) -> Result<ProgressView> {
+        let current = self.profile(today)?.ok_or(ServiceError::NoProfile)?;
+        let revisions = self.db.profile_revisions()?;
+        let first_use = revisions
+            .iter()
+            .map(|r| r.effective_from)
+            .min()
+            .unwrap_or(today);
+        let from = period.start(today, first_use);
+        let to = today;
+
+        // Pesées : l'année qui précède la période sert à amorcer la tendance.
+        let since = from
+            .checked_sub_days(Days::new(WEIGHT_HISTORY_DAYS))
+            .unwrap_or(from);
+        let points = weigh_in_points(&self.db.weigh_ins_between(since, to)?);
+        let series = trend_series(&points, to, DEFAULT_ALPHA);
+        let in_period: Vec<&TrendPoint> = series.iter().filter(|p| p.date >= from).collect();
+        let weigh_ins = in_period
+            .iter()
+            .filter_map(|p| p.raw_kg.map(|kg| WeightPoint { date: p.date, kg }))
+            .collect();
+        let trend: Vec<WeightPoint> = in_period
+            .iter()
+            .map(|p| WeightPoint {
+                date: p.date,
+                kg: p.trend_kg,
+            })
+            .collect();
+        let trend_change_kg = match (trend.first(), trend.last()) {
+            (Some(first), Some(last)) if trend.len() > 1 => Some(last.kg - first.kg),
+            _ => None,
+        };
+        let today_weight = series.last().map_or(current.weight_kg, |p| p.trend_kg);
+
+        // Les journées de la période.
+        let totals = self.db.daily_totals_between(from, to)?;
+        let activities = self.db.activities_between(from, to)?;
+        let statuses = self.db.day_statuses_between(from, to)?;
+        let history = self.tdee_history()?;
+        let records: Vec<DayRecord> = from
+            .iter_days()
+            .take_while(|date| *date <= to)
+            .map(|date| {
+                // Avant le premier profil, le premier profil s'applique (comme `profile`).
+                let profile = profile_on(&revisions, date)
+                    .or_else(|| revisions.first().map(|r| &r.profile))
+                    .unwrap_or(&current);
+                let weight_kg = trend_on(&series, date).unwrap_or(profile.weight_kg);
+                let tdee = history
+                    .iter()
+                    .filter(|(start, _)| *start <= date)
+                    .max_by_key(|(start, _)| *start)
+                    .map_or_else(|| initial_tdee_for(profile, weight_kg, date), |(_, t)| *t);
+                let base = base_target(tdee, profile.goal, profile.sex, weight_kg, None);
+                let activity_kcal = activity_kcal_on(&activities, date);
+                DayRecord {
+                    date,
+                    eaten_kcal: totals
+                        .iter()
+                        .find(|(day, _)| *day == date)
+                        .map_or(0.0, |(_, n)| n.kcal),
+                    activity_kcal,
+                    target_kcal: day_target_kcal(&base, activity_kcal, 1.0),
+                    marked_complete: statuses.iter().any(|s| s.date == date && s.complete),
+                }
+            })
+            .collect();
+        let weekly = weekly_buckets(from, to);
+        let means = period_means(&records);
+
+        Ok(ProgressView {
+            period,
+            from,
+            to,
+            weigh_ins,
+            trend,
+            trend_change_kg,
+            goal_weight_kg: current.goal_weight_kg,
+            projected_goal_date: projection(&current, &series, today, today_weight),
+            weekly,
+            calories: calorie_bars(&records, weekly, current.week_start),
+            mean_eaten_kcal: means.eaten_kcal,
+            mean_target_kcal: means.target_kcal,
+            logged_days: means.logged_days,
+            days: u32::try_from(records.len()).unwrap_or(u32::MAX),
+        })
+    }
+
     // ----- Écran « Aujourd'hui » ------------------------------------------------------------
 
     /// Tout ce qu'affiche l'écran *Aujourd'hui* pour `date` (§5.2). `time` est l'heure locale
@@ -974,16 +1108,7 @@ impl Service {
         let meals = meals_view(&slots, &entries);
         let complete = self.db.day_status(date)?.is_some_and(|s| s.complete);
 
-        // Projection : rythme réel des 14 derniers jours, à défaut le rythme choisi.
-        let projected_goal_date = match profile.goal {
-            Goal::Lose { .. } | Goal::Gain { .. } => {
-                let rate = trend_change(&series, 14)
-                    .map(|change| change / 2.0)
-                    .or_else(|| profile.goal.target_kg_per_week());
-                rate.and_then(|r| projected_goal_date(date, weight_kg, profile.goal_weight_kg, r))
-            }
-            Goal::Maintain | Goal::Recomp => None,
-        };
+        let projected_goal_date = projection(&profile, &series, date, weight_kg);
 
         Ok(TodayView {
             date,
@@ -1006,6 +1131,25 @@ impl Service {
             goal_weight_kg: profile.goal_weight_kg,
             projected_goal_date,
         })
+    }
+}
+
+/// Date estimée d'atteinte du poids objectif (§2.4) : rythme réel des 14 derniers jours, à
+/// défaut le rythme choisi. `None` en maintien et en recomposition.
+fn projection(
+    profile: &Profile,
+    series: &[TrendPoint],
+    date: NaiveDate,
+    weight_kg: f64,
+) -> Option<NaiveDate> {
+    match profile.goal {
+        Goal::Lose { .. } | Goal::Gain { .. } => {
+            let rate = trend_change(series, 14)
+                .map(|change| change / 2.0)
+                .or_else(|| profile.goal.target_kg_per_week());
+            rate.and_then(|r| projected_goal_date(date, weight_kg, profile.goal_weight_kg, r))
+        }
+        Goal::Maintain | Goal::Recomp => None,
     }
 }
 
@@ -1066,6 +1210,7 @@ mod tests {
             goal_weight_kg: 62.0,
             goal: Goal::Lose { kg_per_week: 0.5 },
             activity_level: ActivityLevel::Sedentary,
+            week_start: None,
         }
     }
 
@@ -1711,6 +1856,7 @@ mod tests {
             },
             portion_g: Some(40.0),
             liquid: false,
+            barcode: None,
         }
     }
 
@@ -1954,5 +2100,195 @@ mod tests {
         assert!(!service.weekly_review(date(9)).unwrap().unwrap().frozen);
         let next = service.weekly_review(date(16)).unwrap().unwrap();
         assert!((next.tdee_kcal - next.previous_tdee_kcal - 100.0).abs() < 1e-9);
+    }
+
+    fn quick(service: &mut Service, day: NaiveDate, kcal: f64) {
+        let meal = service.db().meal_slots().unwrap()[0].meta.id;
+        let input = QuickAddInput {
+            date: day,
+            meal_slot_id: meal,
+            label: String::new(),
+            kcal,
+            protein_g: None,
+            carbs_g: None,
+            fat_g: None,
+        };
+        service.quick_add(input, 10_000).unwrap();
+    }
+
+    #[test]
+    fn settings_edit_keeps_weight_and_week_start() {
+        let mut service = ready();
+        let settings = service.settings(date(15)).unwrap();
+        assert_eq!(settings.profile.week_start, chrono::Weekday::Mon);
+        assert!(!settings.target_frozen);
+
+        // Réglages : taille et premier jour de la semaine changés, poids inchangé.
+        let edit = ProfileInput {
+            height_cm: 168.0,
+            week_start: Some(chrono::Weekday::Sun),
+            ..profile_input()
+        };
+        service.save_profile(edit.clone(), date(17), 2_000).unwrap();
+        assert!(
+            service
+                .db()
+                .weigh_ins_between(date(16), date(30))
+                .unwrap()
+                .is_empty(),
+            "pas de pesée ajoutée quand le poids ne change pas"
+        );
+        let profile = service.settings(date(17)).unwrap().profile;
+        assert_eq!(
+            (profile.height_cm, profile.week_start),
+            (168.0, chrono::Weekday::Sun)
+        );
+        // Les jours passés gardent l'ancien profil (§2.1).
+        assert_eq!(service.profile(date(16)).unwrap().unwrap().height_cm, 170.0);
+
+        // Sans premier jour indiqué, il est conservé.
+        let again = ProfileInput {
+            week_start: None,
+            ..edit
+        };
+        service
+            .save_profile(again.clone(), date(18), 3_000)
+            .unwrap();
+        assert_eq!(
+            service.profile(date(18)).unwrap().unwrap().week_start,
+            chrono::Weekday::Sun
+        );
+
+        // Un nouveau poids devient la pesée du jour.
+        let heavier = ProfileInput {
+            weight_kg: 68.0,
+            ..again
+        };
+        service.save_profile(heavier, date(19), 4_000).unwrap();
+        let weigh_ins = service.db().weigh_ins_between(date(19), date(19)).unwrap();
+        assert_eq!(weigh_ins.len(), 1);
+        assert_eq!(weigh_ins[0].weight_kg, 68.0);
+
+        service.set_target_frozen(true).unwrap();
+        assert!(service.settings(date(19)).unwrap().target_frozen);
+        assert!(matches!(
+            Service::open_in_memory().unwrap().settings(date(15)),
+            Err(ServiceError::NoProfile)
+        ));
+    }
+
+    #[test]
+    fn progress_follows_profile_history() {
+        let mut service = ready();
+        quick(&mut service, date(15), 1_500.0);
+        quick(&mut service, date(16), 1_500.0);
+        quick(&mut service, date(17), 300.0);
+        let maintain = ProfileInput {
+            goal: Goal::Maintain,
+            ..profile_input()
+        };
+        service.save_profile(maintain, date(17), 2_000).unwrap();
+
+        let view = service.progress(ProgressPeriod::Week, date(17)).unwrap();
+        assert_eq!((view.from, view.to, view.days), (date(11), date(17), 7));
+        assert!(!view.weekly);
+        assert_eq!(view.calories.len(), 7);
+        // Avant le premier jour : rien de mangé, cible du premier profil (plancher).
+        assert_eq!(view.calories[0].eaten_kcal, None);
+        assert_eq!(view.calories[0].target_kcal, 1_200.0);
+        // Le 15 et le 16 : perte de poids, cible au plancher de 1 200 kcal.
+        assert_eq!(view.calories[4].eaten_kcal, Some(1_500.0));
+        assert_eq!(view.calories[4].target_kcal, 1_200.0);
+        // Le 17 : maintien (dépense de 1 705,8 kcal), journée commencée seulement.
+        let last = view.calories[6];
+        assert!((last.target_kcal - 1_705.8).abs() < 1e-9);
+        assert_eq!(last.eaten_kcal, Some(300.0));
+        assert!(last.partial);
+        // Moyennes : seuls le 15 et le 16 comptent.
+        assert_eq!(view.logged_days, 2);
+        assert_eq!(view.mean_eaten_kcal, Some(1_500.0));
+        assert_eq!(view.mean_target_kcal, Some(1_200.0));
+
+        // Poids : la pesée du profil, et la tendance du 15 au 17.
+        assert_eq!(
+            view.weigh_ins,
+            vec![WeightPoint {
+                date: date(15),
+                kg: 70.0
+            }]
+        );
+        assert_eq!(view.trend.len(), 3);
+        assert_eq!(view.trend_change_kg, Some(0.0));
+        assert_eq!(view.goal_weight_kg, 62.0);
+        // Maintien : pas de projection.
+        assert_eq!(view.projected_goal_date, None);
+    }
+
+    #[test]
+    fn progress_periods() {
+        let mut service = ready();
+        service.add_weigh_in(date(16), 69.6, 2_000).unwrap();
+        let today = date(17);
+
+        let all = service.progress(ProgressPeriod::All, today).unwrap();
+        assert_eq!(all.from, date(11), "au moins une semaine");
+
+        let year = service.progress(ProgressPeriod::Year, today).unwrap();
+        assert!(year.weekly);
+        assert_eq!(year.days, 365);
+        assert_eq!(year.calories.first().unwrap().from, year.from);
+        assert_eq!(year.calories.last().unwrap().to, today);
+        // Semaines du lundi : le 16 novembre 2026 est un lundi.
+        assert_eq!(year.calories.last().unwrap().from, date(16));
+        // α = 0,1 : 70 → 69,96 le 16 → 69,924 le 17 (le dernier poids, 69,6, est conservé).
+        let change = year.trend_change_kg.unwrap();
+        assert!((change + 0.076).abs() < 1e-9, "{change}");
+        // Perte de poids : la projection existe.
+        assert!(year.projected_goal_date.is_some_and(|d| d > today));
+
+        let quarter = service.progress(ProgressPeriod::Quarter, today).unwrap();
+        assert!(!quarter.weekly);
+        assert_eq!(quarter.calories.len(), 90);
+    }
+
+    #[test]
+    fn custom_food_barcode() {
+        let (mut service, _, _, _) = kitchen();
+        let with_code = |code: &str| CustomFoodInput {
+            barcode: Some(code.to_owned()),
+            ..granola()
+        };
+        // Espaces retirés ; le scan de ce code ouvre ensuite l'aliment, à jour.
+        let detail = service
+            .create_custom_food(with_code(" 3017 6204 22003 "), 1_000)
+            .unwrap();
+        assert_eq!(detail.food.barcode.as_deref(), Some("3017620422003"));
+        let (found, fresh) = service
+            .local_product("3017620422003", 1_000_000_000_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.food.meta.id, detail.food.meta.id);
+        assert!(fresh, "un aliment personnel n'expire pas");
+
+        // Un seul aliment personnel par code-barres ; un code mal formé est refusé.
+        assert!(
+            service
+                .create_custom_food(with_code("3017620422003"), 2_000)
+                .is_err()
+        );
+        assert!(
+            service
+                .create_custom_food(with_code("12345"), 2_000)
+                .is_err()
+        );
+        assert!(
+            service
+                .create_custom_food(with_code("30176204220ab"), 2_000)
+                .is_err()
+        );
+        // Vide : pas de code-barres.
+        let blank = service.create_custom_food(with_code("  "), 2_000).unwrap();
+        assert_eq!(blank.food.barcode, None);
+        assert_eq!(service.custom_foods().unwrap().len(), 2);
     }
 }

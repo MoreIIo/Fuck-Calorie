@@ -5,9 +5,13 @@
 
 mod add;
 mod api;
+mod charts;
 mod format;
 mod icons;
+mod nav;
 mod onboarding;
+mod progress;
+mod settings;
 mod today;
 
 use chrono::NaiveDate;
@@ -15,7 +19,10 @@ use fc_core::api::{TodayView, WeekReport};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use crate::nav::{Nav, Page};
 use crate::onboarding::Onboarding;
+use crate::progress::Progress;
+use crate::settings::Settings;
 use crate::today::Today;
 
 fn main() {
@@ -23,12 +30,83 @@ fn main() {
     leptos::mount::mount_to_body(App);
 }
 
-/// État de chargement de l'écran.
+/// État partagé entre les écrans.
+#[derive(Clone, Copy)]
+pub struct Shell {
+    /// Date du jour (fixée à l'ouverture de l'application).
+    pub today: NaiveDate,
+    /// Jour affiché par l'écran *Aujourd'hui*.
+    pub date: RwSignal<NaiveDate>,
+    /// Incrémenté après chaque modification pour recharger l'écran affiché.
+    pub reload: RwSignal<u32>,
+    pub page: RwSignal<Page>,
+    /// Demande d'ouverture de la feuille d'ajout (bouton « + » de la navigation, §5.1).
+    pub add_requested: RwSignal<bool>,
+    /// Le scan de code-barres est disponible (mobile, §4.1).
+    pub can_scan: RwSignal<bool>,
+}
+
+impl Shell {
+    pub fn refresh(&self) {
+        self.reload.update(|n| *n += 1);
+    }
+
+    /// Ouvre le journal du jour `day` (depuis un graphique de l'écran *Progrès*, §5.3).
+    pub fn open_day(&self, day: NaiveDate) {
+        self.date.set(day);
+        self.page.set(Page::Today);
+    }
+}
+
+#[component]
+fn App() -> impl IntoView {
+    let shell = Shell {
+        today: api::local_today(),
+        date: RwSignal::new(api::local_today()),
+        reload: RwSignal::new(0),
+        page: RwSignal::new(Page::Today),
+        add_requested: RwSignal::new(false),
+        can_scan: RwSignal::new(false),
+    };
+    provide_context(shell);
+    if api::in_tauri() {
+        spawn_local(async move { shell.can_scan.set(api::can_scan().await) });
+    }
+    // La navigation n'apparaît qu'une fois le profil renseigné.
+    let has_profile = RwSignal::new(false);
+
+    view! {
+        <div class="backdrop" aria-hidden="true">
+            <div class="light l1"></div>
+            <div class="light l2"></div>
+            <div class="light l3"></div>
+            <div class="grain"></div>
+        </div>
+        <Show when=move || has_profile.get()>
+            <Nav />
+        </Show>
+        <main class="app" class:with-nav=move || has_profile.get()>
+            {move || {
+                if !api::in_tauri() {
+                    return view! { <OutsideApp /> }.into_any();
+                }
+                match shell.page.get() {
+                    Page::Today => view! { <TodayPage has_profile=has_profile /> }.into_any(),
+                    Page::Progress => view! { <Progress /> }.into_any(),
+                    Page::Settings => view! { <Settings /> }.into_any(),
+                }
+            }}
+            <p class="disclaimer muted">
+                "Fuck Calorie n'est pas un dispositif médical. Demandez conseil à un professionnel de santé avant un changement important d'alimentation."
+            </p>
+        </main>
+    }
+}
+
+/// État de chargement de l'écran *Aujourd'hui*.
 #[derive(Clone)]
 enum Screen {
     Loading,
-    /// Ouverte dans un navigateur, hors de l'application.
-    OutsideApp,
     /// Premier lancement : profil à renseigner.
     NeedProfile,
     Ready(Box<TodayView>, Option<Box<WeekReport>>),
@@ -36,20 +114,14 @@ enum Screen {
 }
 
 #[component]
-fn App() -> impl IntoView {
-    let today: NaiveDate = api::local_today();
-    let date = RwSignal::new(today);
-    // Incrémenté après chaque modification pour recharger l'écran.
-    let reload = RwSignal::new(0_u32);
+fn TodayPage(has_profile: RwSignal<bool>) -> impl IntoView {
+    let shell = expect_context::<Shell>();
+    let today = shell.today;
     let screen = RwSignal::new(Screen::Loading);
 
     Effect::new(move |_| {
-        let day = date.get();
-        reload.track();
-        if !api::in_tauri() {
-            screen.set(Screen::OutsideApp);
-            return;
-        }
+        let day = shell.date.get();
+        shell.reload.track();
         spawn_local(async move {
             // Le bilan d'abord : en début de semaine, il recalcule la dépense, donc la cible
             // affichée ensuite. S'il échoue, l'écran s'affiche sans lui.
@@ -59,51 +131,38 @@ fn App() -> impl IntoView {
                 Ok(None) => Screen::NeedProfile,
                 Err(error) => Screen::Error(error),
             };
-            screen.set(next);
+            if matches!(next, Screen::Ready(..)) {
+                has_profile.set(true);
+            }
+            // L'écran a pu être quitté pendant le chargement.
+            let _ = screen.try_set(next);
         });
     });
 
-    view! {
-        <div class="backdrop" aria-hidden="true">
-            <div class="light l1"></div>
-            <div class="light l2"></div>
-            <div class="light l3"></div>
-            <div class="grain"></div>
-        </div>
-        <main class="app">
-            {move || match screen.get() {
-                Screen::Loading => view! { <p class="muted">"Chargement…"</p> }.into_any(),
-                Screen::OutsideApp => view! { <OutsideApp /> }.into_any(),
-                Screen::NeedProfile => view! { <Onboarding today=today reload=reload /> }.into_any(),
-                Screen::Ready(data, report) => {
-                    view! {
-                        <Today
-                            data=*data
-                            report=report.map(|r| *r)
-                            today=today
-                            date=date
-                            reload=reload
-                        />
-                    }
-                        .into_any()
-                }
-                Screen::Error(error) => {
-                    view! {
-                        <div class="glass banner">
-                            <p class="h2">"Quelque chose s'est mal passé"</p>
-                            <p class="error">{error}</p>
-                            <button class="btn" on:click=move |_| reload.update(|n| *n += 1)>
-                                "Réessayer"
-                            </button>
-                        </div>
-                    }
-                        .into_any()
-                }
-            }}
-            <p class="disclaimer muted">
-                "Fuck Calorie n'est pas un dispositif médical. Demandez conseil à un professionnel de santé avant un changement important d'alimentation."
-            </p>
-        </main>
+    move || match screen.get() {
+        Screen::Loading => view! { <p class="muted">"Chargement…"</p> }.into_any(),
+        Screen::NeedProfile => view! { <Onboarding today=today reload=shell.reload /> }.into_any(),
+        Screen::Ready(data, report) => view! {
+            <Today
+                data=*data
+                report=report.map(|r| *r)
+                today=today
+                date=shell.date
+                reload=shell.reload
+                add_requested=shell.add_requested
+            />
+        }
+        .into_any(),
+        Screen::Error(error) => view! {
+            <div class="glass banner">
+                <p class="h2">"Quelque chose s'est mal passé"</p>
+                <p class="error">{error}</p>
+                <button class="btn" on:click=move |_| shell.refresh()>
+                    "Réessayer"
+                </button>
+            </div>
+        }
+        .into_any(),
     }
 }
 

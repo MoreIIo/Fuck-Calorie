@@ -2,12 +2,13 @@
 
 use chrono::{NaiveDate, NaiveTime};
 use fc_core::api::{
-    CustomFoodInput, EntryDetail, FoodDetail, FoodHit, LogFoodInput, ProfileInput, QuickAddInput,
-    SavedMealView, TodayView, UpdateEntryInput, WeekReport,
+    CustomFoodInput, EntryDetail, FoodDetail, FoodHit, LogFoodInput, ProfileInput, ProgressView,
+    QuickAddInput, SavedMealView, SettingsView, TodayView, UpdateEntryInput, WeekReport,
 };
 use fc_core::profile::Profile;
-use serde::Serialize;
+use fc_core::progress::ProgressPeriod;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use wasm_bindgen::prelude::*;
 
@@ -248,4 +249,81 @@ pub fn local_today() -> NaiveDate {
 pub fn local_time() -> NaiveTime {
     let now = js_sys::Date::new_0();
     NaiveTime::from_hms_opt(now.get_hours(), now.get_minutes(), 0).unwrap_or_default()
+}
+
+/// Écran *Réglages* : le profil en vigueur et les options de la cible.
+pub async fn settings(today: NaiveDate) -> Result<SettingsView, String> {
+    call("settings", &TodayArgs { today }).await
+}
+
+#[derive(Serialize)]
+struct ProgressArgs {
+    period: ProgressPeriod,
+    today: NaiveDate,
+}
+
+/// Écran *Progrès* (§5.3) pour une période.
+pub async fn progress(period: ProgressPeriod, today: NaiveDate) -> Result<ProgressView, String> {
+    call("progress", &ProgressArgs { period, today }).await
+}
+
+// ----- Scan de code-barres (§4.2), mobile uniquement --------------------------------------
+
+/// Le scan de code-barres est-il disponible sur cet appareil ? (§4.1 : mobile seulement)
+pub async fn can_scan() -> bool {
+    call("can_scan", &NoArgs {}).await.unwrap_or(false)
+}
+
+#[derive(Deserialize)]
+struct CameraPermission {
+    camera: String,
+}
+
+#[derive(Serialize)]
+struct ScanArgs {
+    formats: [&'static str; 4],
+    /// Caméra derrière l'interface rendue transparente : le viseur et le bouton
+    /// « Annuler » sont ceux de l'application.
+    windowed: bool,
+}
+
+#[derive(Deserialize)]
+struct Scanned {
+    content: String,
+}
+
+/// Ouvre la caméra et attend un code-barres (plugin `barcode-scanner` de Tauri). `Ok(None)` :
+/// scan annulé.
+pub async fn scan_barcode() -> Result<Option<String>, String> {
+    let permission: CameraPermission =
+        call("plugin:barcode-scanner|request_permissions", &NoArgs {}).await?;
+    if permission.camera != "granted" {
+        return Err(
+            "L'accès à l'appareil photo est refusé : autorise-le dans les réglages du téléphone pour scanner."
+                .to_owned(),
+        );
+    }
+    let args = ScanArgs {
+        formats: ["EAN_13", "EAN_8", "UPC_A", "UPC_E"],
+        windowed: true,
+    };
+    match call::<_, Scanned>("plugin:barcode-scanner|scan", &args).await {
+        Ok(scanned) => {
+            // Vibration courte au scan réussi (§4.2) ; sans importance si elle échoue.
+            let _ = call::<_, ()>("plugin:barcode-scanner|vibrate", &NoArgs {}).await;
+            Ok(Some(scanned.content.trim().to_owned()))
+        }
+        Err(message) if message.contains("cancel") => Ok(None),
+        Err(message) => Err(message),
+    }
+}
+
+/// Produit d'un code-barres scanné ou tapé ; `None` s'il est inconnu.
+pub async fn barcode_product(barcode: String) -> Result<Option<FoodDetail>, String> {
+    call("barcode_product", &BarcodeArgs { barcode }).await
+}
+
+/// Arrête le scan en cours (bouton « Annuler » du viseur).
+pub async fn cancel_scan() {
+    let _ = call::<_, ()>("plugin:barcode-scanner|cancel", &NoArgs {}).await;
 }

@@ -13,15 +13,16 @@ use fc_core::api::{
     CustomFoodInput, FoodDetail, FoodHit, LogFoodInput, MealView, QuickAddInput, SavedMealView,
     UpdateEntryInput,
 };
-use fc_core::food::{Food, FoodSource, Unit};
+use fc_core::food::{Food, FoodSource, Unit, is_barcode};
 use fc_core::nutrients::NutrientFacts;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use uuid::Uuid;
 
+use crate::Shell;
 use crate::api;
 use crate::format::{int, one_decimal, parse_number, quantity};
-use crate::icons::{IconClose, IconLeft};
+use crate::icons::{IconBarcode, IconClose, IconLeft};
 
 /// Pause dans la frappe avant d'interroger Open Food Facts. Plus longue que les 300 ms du
 /// §3.1 : Open Food Facts n'accepte qu'une dizaine de recherches par minute.
@@ -34,8 +35,9 @@ enum Mode {
     /// Écran de quantité ; `Some(ligne)` quand on modifie une ligne existante du journal.
     Quantity(Box<FoodDetail>, Option<Uuid>),
     Quick,
-    /// Création d'un aliment personnel (§3.7).
-    Custom,
+    /// Création d'un aliment personnel (§3.7), avec le code-barres d'un produit scanné mais
+    /// inconnu (§4.2).
+    Custom(Option<String>),
     /// Ouverture d'une ligne du journal en cours.
     Loading,
     /// Ligne sans fiche (ajout rapide) : seul son repas peut changer. Identifiant, libellé.
@@ -48,6 +50,8 @@ enum Mode {
 pub enum SheetRequest {
     /// Ajouter au repas indiqué.
     Add(Uuid),
+    /// Ajouter au repas indiqué en commençant par scanner un code-barres (§4.2, mobile).
+    Scan(Uuid),
     /// Modifier une ligne du journal : identifiant de la ligne, puis de son repas.
     Edit(Uuid, Uuid),
 }
@@ -91,9 +95,10 @@ pub fn AddSheet(
     reload: RwSignal<u32>,
 ) -> impl IntoView {
     let (initial_meal, editing) = match request {
-        SheetRequest::Add(meal) => (meal, None),
+        SheetRequest::Add(meal) | SheetRequest::Scan(meal) => (meal, None),
         SheetRequest::Edit(entry, meal) => (meal, Some(entry)),
     };
+    let scan_first = matches!(request, SheetRequest::Scan(_));
     let meal = RwSignal::new(initial_meal);
     let mode = RwSignal::new(if editing.is_some() {
         Mode::Loading
@@ -123,7 +128,7 @@ pub fn AddSheet(
         Mode::Search => "Ajouter",
         Mode::Quantity(_, None) => "Quantité",
         Mode::Quick => "Ajout rapide",
-        Mode::Custom => "Nouvel aliment",
+        Mode::Custom(_) => "Nouvel aliment",
         Mode::Quantity(_, Some(_)) | Mode::Loading | Mode::Move(..) | Mode::Failed(_) => "Modifier",
     };
 
@@ -145,7 +150,7 @@ pub fn AddSheet(
             >
                 <div class="sheet-head">
                     {move || {
-                        matches!(mode.get(), Mode::Quantity(_, None) | Mode::Quick | Mode::Custom)
+                        matches!(mode.get(), Mode::Quantity(_, None) | Mode::Quick | Mode::Custom(_))
                             .then(|| {
                                 view! {
                                     <button
@@ -186,11 +191,20 @@ pub fn AddSheet(
                 {move || match mode.get() {
                     Mode::Search => {
                         view! {
-                            <SearchPane mode=mode meal=meal date=date sheet=sheet reload=reload />
+                            <SearchPane
+                                mode=mode
+                                meal=meal
+                                date=date
+                                sheet=sheet
+                                reload=reload
+                                scan_first=scan_first
+                            />
                         }
                             .into_any()
                     }
-                    Mode::Custom => view! { <CustomPane mode=mode /> }.into_any(),
+                    Mode::Custom(barcode) => {
+                        view! { <CustomPane mode=mode barcode=barcode /> }.into_any()
+                    }
                     Mode::Loading => view! { <p class="muted">"Chargement…"</p> }.into_any(),
                     Mode::Failed(message) => view! { <p class="error">{message}</p> }.into_any(),
                     Mode::Move(id, label) => {
@@ -267,8 +281,14 @@ fn SearchPane(
     date: NaiveDate,
     sheet: RwSignal<Option<SheetRequest>>,
     reload: RwSignal<u32>,
+    /// Ouvrir la caméra tout de suite (bouton de scan de l'écran *Aujourd'hui*).
+    scan_first: bool,
 ) -> impl IntoView {
+    let shell = expect_context::<Shell>();
     let query = RwSignal::new(String::new());
+    // Code-barres inconnu (ni sur l'appareil, ni sur Open Food Facts) : proposer de le créer.
+    let unknown = RwSignal::new(None::<String>);
+    let scanning = RwSignal::new(false);
     // Liste de l'onglet choisi (récents, favoris, mes aliments) et repas enregistrés.
     let tab = RwSignal::new(Tab::Recent);
     let listed = RwSignal::new(Vec::<FoodHit>::new());
@@ -282,7 +302,9 @@ fn SearchPane(
     let input_ref = NodeRef::<leptos::html::Input>::new();
 
     Effect::new(move |_| {
-        if let Some(el) = input_ref.get() {
+        if let Some(el) = input_ref.get()
+            && !scan_first
+        {
             let _ = el.focus();
         }
     });
@@ -327,6 +349,7 @@ fn SearchPane(
         let id = typed.get_value().wrapping_add(1);
         typed.set_value(id);
         error.set(None);
+        unknown.set(None);
         let length = text.trim().chars().count();
         if length < 2 {
             local.set(Vec::new());
@@ -348,7 +371,9 @@ fn SearchPane(
                 }
             }
         });
-        if length < 3 {
+        // Un code-barres s'ouvre directement (ligne « Ouvrir le code-barres »), sans
+        // dépenser une recherche en ligne.
+        if length < 3 || is_barcode(text.trim()) {
             online.set(Online::Idle);
             return;
         }
@@ -395,6 +420,58 @@ fn SearchPane(
             }
         });
     };
+
+    // Code-barres scanné ou tapé (§4.2) : cache local, puis Open Food Facts.
+    let open_barcode = move |code: String| {
+        if opening.get_untracked() {
+            return;
+        }
+        opening.set(true);
+        error.set(None);
+        unknown.set(None);
+        spawn_local(async move {
+            let result = api::barcode_product(code.clone()).await;
+            let _ = opening.try_set(false);
+            match result {
+                Ok(Some(detail)) => {
+                    let _ = mode.try_set(Mode::Quantity(Box::new(detail), None));
+                }
+                Ok(None) => {
+                    let _ = unknown.try_set(Some(code));
+                }
+                Err(message) => {
+                    let _ = error.try_set(Some(message));
+                }
+            }
+        });
+    };
+
+    // Scan (§4.2) : la caméra s'affiche derrière l'interface, rendue transparente le temps du
+    // scan ; seul le viseur reste visible.
+    let scan = move || {
+        if scanning.get_untracked() {
+            return;
+        }
+        scanning.set(true);
+        error.set(None);
+        unknown.set(None);
+        set_scanning_page(true);
+        spawn_local(async move {
+            let result = api::scan_barcode().await;
+            set_scanning_page(false);
+            let _ = scanning.try_set(false);
+            match result {
+                Ok(Some(code)) => open_barcode(code),
+                Ok(None) => {}
+                Err(message) => {
+                    let _ = error.try_set(Some(message));
+                }
+            }
+        });
+    };
+    if scan_first && shell.can_scan.get_untracked() {
+        scan();
+    }
 
     let rows = move |hits: Vec<FoodHit>| {
         hits.into_iter()
@@ -511,7 +588,7 @@ fn SearchPane(
                             <button
                                 type="button"
                                 class="btn text"
-                                on:click=move |_| mode.set(Mode::Custom)
+                                on:click=move |_| mode.set(Mode::Custom(None))
                             >
                                 "+ Créer un aliment"
                             </button>
@@ -549,8 +626,23 @@ fn SearchPane(
                 }
             }
         };
-        let none_local = found.is_empty();
+        let typed_code = query.get().trim().to_owned();
+        let code_row = is_barcode(&typed_code).then(|| {
+            let shown = typed_code.clone();
+            view! {
+                <button
+                    type="button"
+                    class="hit"
+                    on:click=move |_| open_barcode(typed_code.clone())
+                >
+                    <span class="name">{format!("Ouvrir le code-barres {shown}")}</span>
+                    <span class="detail muted">"Sur cet appareil, sinon Open Food Facts"</span>
+                </button>
+            }
+        });
+        let none_local = found.is_empty() && code_row.is_none();
         view! {
+            {code_row}
             {none_local
                 .then(|| view! { <p class="muted empty">"Aucun aliment trouvé sur cet appareil."</p> })}
             {rows(found)}
@@ -560,26 +652,95 @@ fn SearchPane(
     };
 
     view! {
-        <label class="field">
-            <span class="label">"Rechercher un aliment"</span>
-            <input
-                class="input"
-                type="search"
-                autocomplete="off"
-                placeholder="Yaourt, pomme, une marque…"
-                node_ref=input_ref
-                prop:value=move || query.get()
-                on:input=on_input
-                on:keydown=on_keydown
-            />
-        </label>
+        <div class="search-row">
+            <label class="field">
+                <span class="label">"Rechercher un aliment"</span>
+                <input
+                    class="input"
+                    type="search"
+                    autocomplete="off"
+                    placeholder="Yaourt, pomme, une marque, un code-barres…"
+                    node_ref=input_ref
+                    prop:value=move || query.get()
+                    on:input=on_input
+                    on:keydown=on_keydown
+                />
+            </label>
+            <Show when=move || shell.can_scan.get()>
+                <button
+                    type="button"
+                    class="btn scan-btn"
+                    aria-label="Scanner un code-barres"
+                    on:click=move |_| scan()
+                >
+                    <IconBarcode />
+                </button>
+            </Show>
+        </div>
+        <Show when=move || scanning.get()>
+            <ScanOverlay />
+        </Show>
         {move || error.get().map(|m| view! { <p class="error">{m}</p> })}
+        {move || {
+            unknown
+                .get()
+                .map(|code| {
+                    let shown = code.clone();
+                    view! {
+                        <div class="glass card unknown" role="status">
+                            <p class="h2">"Produit introuvable"</p>
+                            <p class="muted">
+                                {format!(
+                                    "Le code-barres {shown} n'est ni sur cet appareil ni sur Open Food Facts. Tu peux le créer : le prochain scan l'ouvrira directement.",
+                                )}
+                            </p>
+                            <button
+                                type="button"
+                                class="btn primary"
+                                on:click=move |_| mode.set(Mode::Custom(Some(code.clone())))
+                            >
+                                "Créer cet aliment"
+                            </button>
+                        </div>
+                    }
+                })
+        }}
         <div class="results" class:busy=move || opening.get() aria-live="polite">
             {results}
         </div>
         <button type="button" class="btn text" on:click=move |_| mode.set(Mode::Quick)>
             "Ajout rapide (calories seules)"
         </button>
+    }
+}
+
+/// Pendant le scan, la page devient transparente (la caméra est derrière la fenêtre) : seul
+/// le viseur reste visible (styles `html[data-scanning]`).
+fn set_scanning_page(on: bool) {
+    if let Some(root) = document().document_element() {
+        let _ = if on {
+            root.set_attribute("data-scanning", "")
+        } else {
+            root.remove_attribute("data-scanning")
+        };
+    }
+}
+
+/// Viseur du scan (§4.2) : cadre à angles droits et bouton « Annuler ».
+#[component]
+fn ScanOverlay() -> impl IntoView {
+    view! {
+        <div class="scan-overlay" role="dialog" aria-label="Scan d'un code-barres">
+            <p class="scan-hint">"Vise le code-barres du produit"</p>
+            <div class="scan-frame" aria-hidden="true"></div>
+            <button
+                type="button"
+                class="btn scan-cancel"
+                on:click=move |_| spawn_local(api::cancel_scan())
+            >
+                "Annuler"
+            </button>
+        </div>
     }
 }
 
@@ -1006,7 +1167,12 @@ fn MovePane(
 
 /// Création manuelle : nom, marque, valeurs pour 100 g (ou 100 ml), portion facultative.
 #[component]
-fn CustomPane(mode: RwSignal<Mode>) -> impl IntoView {
+fn CustomPane(
+    mode: RwSignal<Mode>,
+    /// Code-barres d'un produit scanné mais inconnu, pré-rempli.
+    barcode: Option<String>,
+) -> impl IntoView {
+    let barcode = RwSignal::new(barcode.unwrap_or_default());
     let name = RwSignal::new(String::new());
     let brand = RwSignal::new(String::new());
     let kcal = RwSignal::new(String::new());
@@ -1046,6 +1212,7 @@ fn CustomPane(mode: RwSignal<Mode>) -> impl IntoView {
             },
             portion_g: number(portion),
             liquid: liquid.get_untracked(),
+            barcode: Some(barcode.get_untracked()),
         };
         spawn_local(async move {
             match api::create_custom_food(input).await {
@@ -1103,7 +1270,19 @@ fn CustomPane(mode: RwSignal<Mode>) -> impl IntoView {
                 {field("Lipides", fat, "g")} {field("dont saturés", sat_fat, "g")}
                 {field("Fibres", fiber, "g")} {field("Sel", salt, "g")}
             </div>
-            <div class="row">{field("Portion (facultatif)", portion, "g")}</div>
+            <div class="row">
+                {field("Portion (facultatif)", portion, "g")}
+                <label class="field">
+                    <span class="label">"Code-barres (facultatif)"</span>
+                    <input
+                        class="input"
+                        inputmode="numeric"
+                        placeholder="3017620422003"
+                        prop:value=move || barcode.get()
+                        on:input=move |ev| barcode.set(event_target_value(&ev))
+                    />
+                </label>
+            </div>
             <label class="check">
                 <input
                     type="checkbox"

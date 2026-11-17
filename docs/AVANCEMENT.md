@@ -1,7 +1,7 @@
 # Fuck Calorie — Avancement
 
 > Suivi de ce qui est construit par rapport au [cahier des charges](CAHIER_DES_CHARGES.md).
-> Dernière mise à jour : 2026-11-16.
+> Dernière mise à jour : 2026-11-17.
 
 Légende : ✅ fait et testé · 🟡 partiel · ⬜ à faire.
 
@@ -10,11 +10,11 @@ Légende : ✅ fait et testé · 🟡 partiel · ⬜ à faire.
 | Brique | État | Détail |
 |---|---|---|
 | Socle du dépôt (workspace, licence, CI) | ✅ | CI : format, clippy, tests sous Linux et Windows |
-| `fc-core` — cœur métier | ✅ | 78 tests |
+| `fc-core` — cœur métier | ✅ | 85 tests |
 | `fc-storage` — SQLite natif | ✅ | 21 tests ; version web (OPFS) à faire |
-| `fc-service` — opérations de l'application | ✅ | 27 tests |
-| `app/` — interface Leptos | 🟡 | profil, écran *Aujourd'hui*, recherche d'aliments, quantité, modification d'une ligne, copie, favoris, aliments personnels, repas enregistrés, ajout rapide, pesée, bilan de la semaine |
-| `app/src-tauri` — application de bureau | 🟡 | Windows ; Android et iOS à faire |
+| `fc-service` — opérations de l'application | ✅ | 31 tests |
+| `app/` — interface Leptos | 🟡 | navigation, écrans *Aujourd'hui*, *Progrès* et *Réglages*, profil, recherche d'aliments, quantité, modification d'une ligne, copie, favoris, aliments personnels, repas enregistrés, ajout rapide, pesée, bilan de la semaine |
+| `app/src-tauri` — application | 🟡 | Windows ; APK Android et IPA iPhone (non signée, Sideloadly) de test construits par GitHub, avec le scan ; aucun des deux encore essayé sur téléphone |
 | `fc-food-db` — Ciqual + Open Food Facts | ✅ | 16 tests ; Ciqual 2025 (3 341 aliments), client Open Food Facts ; miniatures des produits à faire |
 | `fc-sync` — Google Drive | ⬜ | L'horloge HLC et les écritures idempotentes sont déjà en place |
 
@@ -23,11 +23,12 @@ Légende : ✅ fait et testé · 🟡 partiel · ⬜ à faire.
 | Section | État | Où |
 |---|---|---|
 | §2.1 Profil, historisation | ✅ | `core::profile`, `service`, écran de démarrage |
-| §2.1 Modifier le profil après coup | ⬜ | écran *Réglages* à faire |
+| §2.1 Modifier le profil après coup, premier jour de la semaine | ✅ | écran *Réglages* (historisé : les jours passés gardent leur cible) |
 | §2.2 BMR Mifflin-St Jeor, TDEE initial | ✅ | `core::energy` |
 | §2.3 Poids de tendance, algorithme adaptatif | ✅ | `core::trend`, `core::adaptive` |
 | §2.3 Recalcul hebdomadaire, cible figée | ✅ | `service::weekly_review`, à la première ouverture de la semaine ; explication dans la carte *Bilan de la semaine* |
-| §2.3 Notification du recalcul, jour de recalcul réglable | ⬜ | le recalcul suit le premier jour de la semaine (lundi) |
+| §2.3 Jour de recalcul réglable | ✅ | c'est le premier jour de la semaine, réglable dans *Réglages* |
+| §2.3 Notification du recalcul | ⬜ | changement expliqué dans la carte *Bilan de la semaine* |
 | §2.4 Modes d'objectif, projection | ✅ | `core::goal`, affichée dans la carte poids |
 | §2.5 Macros et repères par défaut | ✅ | `core::macros`, jauges de la carte héro |
 | §2.6 Activité : saisie manuelle, MET, calories Strava | 🟡 | calculs faits ; écran de saisie à faire |
@@ -41,12 +42,14 @@ Légende : ✅ fait et testé · 🟡 partiel · ⬜ à faire.
 | §3.6 Ajout rapide | ✅ | feuille d'ajout |
 | §3.6 Copie, repas enregistrés, favoris | 🟡 | copie depuis la veille (un repas ou la journée), repas enregistrés (créer, ajouter, supprimer), favoris ; copie depuis ou vers une date au choix et décocher des éléments à faire |
 | §3.6 Recettes maison | ⬜ | V1 |
-| §3.7 Aliments personnels | 🟡 | création manuelle ; modification, code-barres et correction d'une fiche Open Food Facts à faire |
-| §4 Scan | ⬜ | |
-| §5.1 Navigation (barre / rail) | ⬜ | un seul écran pour l'instant |
+| §3.7 Aliments personnels | 🟡 | création manuelle, code-barres facultatif ; modification et correction d'une fiche Open Food Facts à faire |
+| §4.2 Scan de code-barres | 🟡 | mobile : bouton dans la recherche et sur l'accueil, viseur, vibration, cache local puis Open Food Facts, produit inconnu → aliment personnel ; lampe torche, mode rafale (V1) et file d'attente hors ligne à faire |
+| §4.3–4.4 Scan d'étiquette, contribution à Open Food Facts | ⬜ | V1 |
+| §5.1 Navigation (barre / rail) | 🟡 | *Aujourd'hui · Progrès · + · Réglages* ; écran *Aliments* et feuille d'action du « + » à faire (le « + » ouvre la feuille d'ajout) |
 | §5.2 Écran *Aujourd'hui* | 🟡 | sans activités du jour |
-| §5.4 Budget quotidien, carte « Bilan de la semaine » | ✅ | en tête de l'accueil le jour du recalcul, sous la carte poids les autres jours (en attendant l'écran *Progrès*) |
-| §5.3 Écran *Progrès* | ⬜ | |
+| §5.4 Budget quotidien, carte « Bilan de la semaine » | ✅ | dans *Progrès* ; sur l'accueil, en tête le jour du recalcul, sous la carte poids les autres jours |
+| §5.3 Écran *Progrès* : poids, calories vs cible | ✅ | `core::progress`, `service::progress`, graphiques SVG maison (`app/src/charts.rs`) |
+| §5.3 Macros, TDEE estimé, mensurations | ⬜ | V1 |
 | §6 Design system | 🟡 | tokens, verre, lumières, grain, Urbanist, clair/sombre, effets réduits ; reflets gyroscope/souris et chiffres qui défilent à faire |
 | §7.2 Synchronisation | 🟡 | HLC, tombstones, écritures idempotentes ; journal d'événements et Drive à faire |
 | §8.4 Transactions, migrations versionnées | ✅ | `fc-storage` (schéma version 2 : favoris) |
@@ -118,6 +121,42 @@ Légende : ✅ fait et testé · 🟡 partiel · ⬜ à faire.
     « cible figée » sont pour l'instant des réglages de l'appareil ; ils devront passer dans
     les données synchronisées avec `fc-sync`.
 
+21. **Certificats sur Android.** Le client Open Food Facts utilise sur Android les certificats
+    racine embarqués (`webpki-roots`, Mozilla) : le vérificateur du système demande sur
+    Android une initialisation côté Java que Tauri ne fait pas.
+22. **APK de test.** arm64 uniquement (tous les téléphones récents), publié dans une
+    pré-version « apk-test » remplacée à chaque envoi.
+23. **Écran *Aliments* (§5.1).** Pas encore d'écran : ses listes (récents, favoris, aliments
+    personnels, repas) restent dans la feuille d'ajout, et la navigation a quatre entrées. Le
+    « + » ouvre directement la feuille d'ajout (sur le jour même depuis un autre écran) au
+    lieu de la feuille d'action prévue.
+24. **Graphique « Calories vs cible » (§5.3).** La moyenne de la période ne compte que les
+    jours journalisés (marqués terminés ou au moins 50 % de la cible), comme le bilan de la
+    semaine ; une journée commencée mais incomplète a une barre plus claire. Au-delà de
+    90 jours (1 an, et « Tout » après trois mois), une barre par semaine : moyenne des jours
+    journalisés. La cible de chaque jour est recalculée avec le profil en vigueur ce jour-là
+    et le poids de tendance actuel (qui peut différer légèrement de celui affiché ce jour-là,
+    les jours sans pesée étant interpolés).
+25. **Projection du poids (§5.3).** L'axe des dates s'allonge au plus de la durée de la
+    période : au-delà, la ligne en pointillés s'arrête au bord et la date estimée est écrite
+    au-dessus du graphique.
+26. **Poids dans *Réglages*.** Le poids actuel ne se modifie pas dans le profil : il suit les
+    pesées (§2.8). Modifier le profil n'ajoute donc plus de pesée.
+27. **Viseur du scan (§4.2).** La caméra s'affiche derrière l'application, rendue
+    transparente le temps du scan (mode `windowed` du plugin) : viseur et bouton « Annuler »
+    sont ceux de Fuck Calorie. Le plugin officiel ne commande pas la lampe torche : elle est
+    reportée. Formats lus : EAN-13, EAN-8, UPC-A, UPC-E.
+28. **Code-barres tapé.** Sur tous les appareils (PC compris, sans scan), un code-barres
+    tapé dans la recherche propose « Ouvrir le code-barres » au lieu d'une recherche en ligne.
+29. **Produit inconnu (§4.2, étape 5).** En attendant le parcours complet du §4.4 (V1),
+    « Créer cet aliment » ouvre la création d'un aliment personnel, code-barres pré-rempli.
+    Un seul aliment personnel par code-barres. Sans réseau, le scan d'un produit jamais vu
+    affiche l'erreur réseau (pas encore de file d'attente).
+30. **IPA iPhone non signée (§1.2, §7.5).** En attendant le programme Apple Developer
+    (V1), GitHub construit une IPA sans signature (`tauri ios build --no-sign`), que
+    Sideloadly signe avec un identifiant Apple gratuit : l'application expire au bout de
+    7 jours et doit être réinstallée.
+
 ## Décisions prises par défaut (16 novembre 2026), à revoir si besoin
 
 - **Pente du poids par régression** (écart 18) : le cahier des charges mesurait la variation
@@ -134,17 +173,20 @@ Légende : ✅ fait et testé · 🟡 partiel · ⬜ à faire.
 
 ## Prochaines étapes proposées
 
-1. **Navigation** et écrans *Réglages* (modifier le profil) et *Progrès* (graphiques).
-2. **Android** : build APK, scan de code-barres.
-3. **`fc-sync`** : journal d'événements, fusion, Google Drive.
-4. **Finitions du journal** : copie depuis une date au choix, repas configurables, modifier un
+1. **Essayer l'IPA sur iPhone** (et l'APK) avec le scan, et corriger ce qui coince.
+2. **`fc-sync`** : journal d'événements, fusion, Google Drive.
+3. **Finitions du journal** : copie depuis une date au choix, repas configurables, modifier un
    aliment personnel, saisie manuelle d'une activité (§2.6).
+4. **Écran *Aliments*** et feuille d'action du « + » (§5.1) ; thème *Système · Clair · Sombre*
+   dans *Réglages* (§6.2).
 
 ## À vérifier à la main
 
-Les phases « recherche d'aliments », « journal complet » et « recalcul hebdomadaire » ont été
-compilées et testées (format, clippy, 147 tests), mais ni l'interface ni les appels réels à Open Food Facts n'ont
-pu être lancés depuis l'environnement de développement. À essayer avec `cargo tauri dev` :
+Les phases « recherche d'aliments », « journal complet », « recalcul hebdomadaire »,
+« navigation, Progrès, Réglages » et « scan de code-barres » ont été compilées et testées
+(format, clippy, 159 tests), mais ni l'interface ni les appels réels à Open Food Facts n'ont
+pu être lancés depuis l'environnement de développement, et la compilation Android n'a pas pu
+y être vérifiée (seule l'intégration continue la fait). À essayer avec `cargo tauri dev` :
 
 - chercher « pomme », puis « yahourt » (faute volontaire) : résultats Ciqual immédiats ;
 - chercher « nutella » : des produits Open Food Facts apparaissent sous les résultats locaux ;
@@ -156,4 +198,18 @@ pu être lancés depuis l'environnement de développement. À essayer avec `carg
   le retrouver dans l'onglet *Repas* de la feuille d'ajout ;
 - mettre un aliment en favori, créer un aliment personnel (onglet *Mes aliments*) ;
 - le bilan de la semaine n'apparaît qu'après une première semaine complète d'utilisation ;
-  « Figer ma cible » puis « Libérer ma cible » changent le texte de la carte.
+  « Figer ma cible » puis « Libérer ma cible » changent le texte de la carte ;
+- navigation : barre en bas quand la fenêtre est étroite, rail à gauche quand elle est large ;
+  le « + » depuis *Progrès* revient sur *Aujourd'hui* avec la feuille d'ajout ouverte ;
+- *Progrès* : changer de période ; survoler le graphique du poids et les barres affiche les
+  valeurs ; cliquer une barre ouvre ce jour dans *Aujourd'hui* ; « 1 an » passe en barres
+  hebdomadaires ; vérifier la lisibilité en thème clair et sombre ;
+- *Réglages* : changer l'objectif, enregistrer : la cible d'aujourd'hui change, celle d'hier
+  non ; changer le premier jour de la semaine ; « Figer ma cible » ;
+- PC : taper `3017620422003` dans la recherche → « Ouvrir le code-barres » → Nutella ;
+- iPhone (IPA de test installée avec Sideloadly, cf. README) ou Android (APK de test) : le
+  haut de l'écran n'est pas caché par l'encoche ; « Scanner un produit » sur l'accueil → autoriser la caméra → le
+  viseur s'affiche sur l'image de la caméra, le reste de l'écran est masqué ; scanner un
+  produit courant → vibration, écran de quantité ; « Annuler » revient à la recherche ;
+  scanner un code inconnu → « Créer cet aliment », code-barres pré-rempli ; refuser la
+  caméra → message clair.

@@ -134,6 +134,12 @@ impl Food {
     }
 }
 
+/// Un code-barres de produit : 8 à 14 chiffres (EAN-8, UPC-A, EAN-13, ITF-14), §4.2.
+#[must_use]
+pub fn is_barcode(text: &str) -> bool {
+    (8..=14).contains(&text.len()) && text.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// Clé de recherche d'un texte : minuscules, sans accents ni ponctuation (§3.3 : recherche
 /// insensible aux accents et à la casse). « Crème fraîche 30 % » → `creme fraiche 30`.
 #[must_use]
@@ -254,6 +260,28 @@ impl Food {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn barcodes() {
+        for code in [
+            "12345670",
+            "036000291452",
+            "3017620422003",
+            "10012345678902",
+        ] {
+            assert!(is_barcode(code), "{code}");
+        }
+        for text in [
+            "1234567",
+            "123456789012345",
+            "30176204220a3",
+            "3017 6204",
+            "",
+            "nutella",
+        ] {
+            assert!(!is_barcode(text), "{text}");
+        }
+    }
     use crate::hlc::Hlc;
     use uuid::Uuid;
 

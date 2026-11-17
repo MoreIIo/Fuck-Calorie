@@ -5,6 +5,8 @@
 //!   Facts (100 lectures de produit et 10 recherches par minute).
 //! - Rien d'autre que le code-barres ou le texte recherché n'est envoyé (§8.1).
 
+#[cfg(any(target_os = "android", test))]
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -42,11 +44,12 @@ impl OffClient {
     pub fn new(app_version: &str) -> Result<Self, OffError> {
         // Fournisseur de chiffrement de rustls ; sans effet s'il est déjà installé.
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let http = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .user_agent(off::user_agent(app_version))
-            .timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|_| OffError::Network)?;
+            .timeout(Duration::from_secs(10));
+        #[cfg(target_os = "android")]
+        let builder = builder.tls_backend_preconfigured(embedded_roots_tls()?);
+        let http = builder.build().map_err(|_| OffError::Network)?;
         Ok(Self {
             http,
             products: Mutex::new(RateLimiter::new(PRODUCTS_PER_MINUTE, MINUTE_MS)),
@@ -96,9 +99,35 @@ impl OffClient {
     }
 }
 
+/// Configuration TLS avec les certificats racine embarqués (Mozilla, `webpki-roots`), pour
+/// Android.
+#[cfg(any(target_os = "android", test))]
+fn embedded_roots_tls() -> Result<rustls::ClientConfig, OffError> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    Ok(rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|_| OffError::Network)?
+    .with_root_certificates(roots)
+    .with_no_client_auth())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn android_tls_configuration_is_accepted() {
+        // Si la version de rustls ne correspondait pas à celle de reqwest, la configuration
+        // serait refusée à la construction du client.
+        let tls = embedded_roots_tls().unwrap();
+        reqwest::Client::builder()
+            .tls_backend_preconfigured(tls)
+            .build()
+            .unwrap();
+    }
 
     #[test]
     fn client_builds_and_limits_searches() {
