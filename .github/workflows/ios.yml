@@ -45,10 +45,14 @@ jobs:
 
       - uses: cargo-bins/cargo-binstall@main
 
-      - name: Outils (Tauri, Trunk, XcodeGen)
+      - name: Outils (Tauri, Trunk, XcodeGen, libimobiledevice, CocoaPods)
         run: |
           cargo binstall --no-confirm tauri-cli@2 trunk
-          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          # Installés ici, en natif (arm64) : sinon `tauri ios init` lance lui-même
+          # `brew install`, sous Rosetta, ce que Homebrew refuse.
+          for formula in xcodegen libimobiledevice cocoapods; do
+            brew list "$formula" >/dev/null 2>&1 || brew install "$formula"
+          done
 
       # Le projet Xcode (app/src-tauri/gen/apple) n'est pas versionné : il est généré ici.
       - name: Projet Xcode
