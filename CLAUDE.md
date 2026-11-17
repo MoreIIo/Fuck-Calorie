@@ -43,9 +43,9 @@ cargo run -p fc-food-db --example import_ciqual -- <table Ciqual FR .csv> crates
   appareils. Ne jamais changer ce calcul.
 - Open Food Facts : toute requête passe par `fc_food_db::client::OffClient` (User-Agent,
   limites de débit). Jamais de requête depuis l'interface.
-- Les workflows GitHub (`.github/workflows/`) ne peuvent pas être écrits par Claude depuis
-  cet environnement : leurs nouvelles versions sont déposées dans `scripts/workflows/`, et
-  Maëlle les copie.
+- Builds de test : `.github/workflows/android.yml` (APK, pré-version « apk-test ») et
+  `ios.yml` (IPA non signée pour Sideloadly, pré-version « ipa-test »), à chaque envoi sur
+  `main`. Le projet natif (`app/src-tauri/gen/`) n'est pas versionné : il est généré en CI.
 - Aucun secret dans le dépôt ; jetons et clés API uniquement dans le coffre sécurisé de la
   plateforme. Aucune télémétrie.
 - Design : `border-radius: 0` partout, un seul accent (bleu Klein), cf. §6. Styles dans
